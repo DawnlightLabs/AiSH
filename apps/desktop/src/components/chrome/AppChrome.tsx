@@ -11,6 +11,7 @@ interface AppChromeProps {
   onSelectProfile: (id: string) => void;
   onNewTab: () => void;
   onSelectTab: (id: string) => void;
+  onCloseTab: (id: string) => void;
   onToggleSettings: () => void;
 }
 
@@ -21,16 +22,17 @@ function shortPath(path: string) {
   return parts.slice(-2).join('/') || normalized;
 }
 
-export function AppChrome({ backendStatus, cwd, tabs, activeTabId, profiles, selectedProfileId, settingsOpen, onSelectProfile, onNewTab, onSelectTab, onToggleSettings }: AppChromeProps) {
+export function AppChrome({ backendStatus, cwd, tabs, activeTabId, profiles, selectedProfileId, settingsOpen, onSelectProfile, onNewTab, onSelectTab, onCloseTab, onToggleSettings }: AppChromeProps) {
   return (
-    <header className="app-chrome">
-      <div className="chrome-left">
+    <header className="app-chrome" data-tauri-drag-region>
+      <div className="chrome-left" data-tauri-drag-region>
         <div className="app-badge">Ai</div>
         <div className="tab-row">
           {tabs.map((tab) => (
             <button key={tab.id} type="button" className={tab.id === activeTabId ? 'tab active-tab' : 'tab'} onClick={() => onSelectTab(tab.id)}>
               <span>{tab.title}</span>
               <small>{shortPath(tab.cwd)}</small>
+              {tabs.length > 1 && <b className="tab-close" onClick={(event) => { event.stopPropagation(); onCloseTab(tab.id); }}>×</b>}
             </button>
           ))}
           <button className="tab add-tab" type="button" title="New tab" onClick={onNewTab}>+</button>

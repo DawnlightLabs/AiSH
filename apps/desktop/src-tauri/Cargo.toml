@@ -13,6 +13,7 @@ tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow = "1"
+portable-pty = "0.8"
 aish-core = { path = "../../../crates/aish-core" }
 aish-context = { path = "../../../crates/aish-context" }
 aish-completion = { path = "../../../crates/aish-completion" }
