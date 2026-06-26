@@ -1,0 +1,14 @@
+{
+  "name": "aish",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AiSH intelligent terminal app and shell/provider layer.",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "desktop:dev": "npm --workspace apps/desktop run tauri dev",
+    "desktop:build": "npm --workspace apps/desktop run tauri build",
+    "desktop:check": "npm --workspace apps/desktop run typecheck"
+  }
+}
