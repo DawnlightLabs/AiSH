@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { CommandTrace, ModelProfile, ModelRunResult, SuggestionItem } from '../types';
+import type { CommandTrace, SuggestionItem } from '../types';
+
+export type ModelProfile = Record<string, unknown>;
+export type ModelRunResult = Record<string, unknown>;
 
 export function backendStatus() {
   return invoke<string>('backend_status');
@@ -27,8 +30,4 @@ export function saveModelProfiles(profiles: ModelProfile[]) {
 
 export function createAiCard(profileId: string, intent: string) {
   return invoke<ModelRunResult>('create_ai_card', { profileId, intent });
-}
-
-export function runLocalModel(profileId: string, prompt: string) {
-  return invoke<ModelRunResult>('run_local_model', { profileId, prompt });
 }
