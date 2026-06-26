@@ -3,9 +3,14 @@ import type { CommandTrace, SuggestionItem } from '../types';
 
 export type ModelProfile = Record<string, unknown>;
 export type ModelRunResult = Record<string, unknown>;
+export type BackendAppState = Record<string, unknown>;
 
 export function backendStatus() {
   return invoke<string>('backend_status');
+}
+
+export function getAppState() {
+  return invoke<BackendAppState>('get_app_state');
 }
 
 export function inspectProject() {
