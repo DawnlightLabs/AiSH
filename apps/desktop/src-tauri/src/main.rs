@@ -1,9 +1,11 @@
 mod commands;
 mod model_store;
 mod shell;
+mod terminal;
 
 fn main() {
     tauri::Builder::default()
+        .manage(terminal::TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             commands::backend_status,
             commands::get_app_state,
