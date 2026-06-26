@@ -52,7 +52,7 @@ pub struct AppState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action_type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum Card {
     Command(CommandCard),
     Plan(PlanCard),
@@ -123,4 +123,18 @@ pub struct FallbackCard {
     pub needs_confirmation: bool,
     pub reason: String,
     pub fallback_message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandTrace {
+    pub intent: String,
+    pub card_type: String,
+    pub risk: RiskLevel,
+    pub context_used: Vec<String>,
+    pub commands: Vec<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u128>,
+    pub safety_decision: String,
+    pub output: String,
+    pub error: String,
 }
