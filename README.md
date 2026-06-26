@@ -1,166 +1,181 @@
 # AiSH
 
-**AiSH** is a cross-platform intelligent terminal app built around three live-switchable modes: normal terminal usage, history-based completion, and local AI-generated command assistance.
-
-AiSH is not just a shell plugin and it is not a chatbot CLI. It is a standalone terminal application that runs real shells inside its own UI and adds a smart input layer on top.
-
-## Core Idea
+AiSH is a minimalist intelligent terminal system with two surfaces:
 
 ```text
-AiSH = terminal app + real shell runtime + smart completion layer
+1. Standalone desktop terminal app
+2. Shell/provider layer for native terminals
 ```
 
-AiSH should work across:
+The app is the primary product. The provider layer lets AiSH features appear inside existing shells when possible.
+
+AiSH should feel closer to a clean Warp-style terminal with a PowerShell-native command experience than to a chatbot CLI. It should not interrupt normal terminal use. It should offer completion, context, and AI only when useful.
+
+## Product Shape
 
 ```text
-Windows: PowerShell, cmd, Git Bash
-macOS:   Zsh, Bash
-Linux:   Bash, Zsh, Fish
+AiSH = terminal app + shell/provider layer + local context engine + optional local AI
 ```
 
-The app owns the terminal UI, suggestion rendering, ghost text, dropdowns, shortcuts, command cards, and AI mode. The actual commands still execute through the user's selected shell.
+### 1. Standalone App
+
+The standalone app owns the full terminal interface:
+
+```text
+- terminal tabs and panes
+- command input
+- ghost suggestions
+- dropdown suggestions
+- command cards
+- mode switching
+- context controls
+- cache controls
+- safety prompts
+- AI panel / inline AI suggestions
+```
+
+The app runs real shells through a PTY backend. Commands execute in PowerShell, cmd, Git Bash, Bash, Zsh, Fish, or other configured shells.
+
+### 2. Shell / Provider Layer
+
+The provider layer integrates AiSH into existing terminal environments:
+
+```text
+- PowerShell provider / module
+- Zsh integration
+- Bash integration
+- Fish integration
+- cmd shim where possible
+```
+
+Provider integrations should be thinner than the app. Their job is to expose completions, context collection, history capture, and explicit AI actions without trying to replace the native shell UI.
+
+## Design Direction
+
+Visual direction:
+
+```text
+- minimalist
+- dark-first
+- calm contrast
+- clean blocks like Warp
+- PowerShell-friendly command language
+- low visual noise
+- fast keyboard-first interactions
+```
+
+The terminal should still feel like a terminal. AiSH UI elements should sit around the command line, not turn the terminal into a chat app.
 
 ## Modes
 
+AiSH has three primary modes.
+
 ### 1. Normal Mode
 
-Plain terminal behavior.
+Plain shell behavior.
 
 ```text
-No prediction
-No AI generation
-No smart completion
-Just type and run commands normally
+- no ghost text
+- no AI
+- no ranking
+- no extra suggestions unless manually opened
 ```
 
-This mode exists so AiSH always remains trustworthy and non-invasive.
+Use this when trust and predictability matter.
 
 ### 2. History Mode
 
-Suggests commands based on local usage.
-
-AiSH uses:
+Local suggestions from user behavior and project context.
 
 ```text
-- recent commands
-- frequent commands
-- current working directory
+Inputs:
+- typed prefix
+- shell history
+- cwd
 - project type
-- successful command patterns
-- current typed prefix
+- package scripts
+- git branches
+- recent successful commands
+- frequency and recency
 ```
 
-Example:
-
-```text
-User types: npm
-AiSH suggests: npm run dev
-```
-
-History Mode should be the default mode for the first release because it is fast, private, and useful without needing an AI model.
+This is the default mode for the first stable release.
 
 ### 3. AI Mode
 
-Generates command suggestions from user intent and local context.
+AI-assisted command help. AI Mode has two submodes.
 
-Example:
+#### AI Suggest
 
-```text
-User types: find process using port 3000
-AiSH suggests: netstat -ano | findstr :3000
-```
-
-AI Mode should be opt-in or shortcut-triggered, not constantly running on every keystroke.
-
-## Suggested Shortcuts
+Inline or dropdown command suggestions.
 
 ```text
-Ctrl + 1         Normal Mode
-Ctrl + 2         History Mode
-Ctrl + 3         AI Mode
-Ctrl + Shift + M Cycle modes
-Tab              Accept suggestion
-Right Arrow      Accept ghost suggestion
-Ctrl + Space     Open suggestions / ask AI
-Esc              Dismiss suggestion
-Alt + Enter      Explain selected command
+User intent -> command card -> safety check -> suggestion
 ```
 
-## Product Architecture
+The model may generate a command, plan, fallback, or explanation card. It never directly executes commands.
+
+#### AI Ask
+
+A side panel / command palette flow for longer help.
 
 ```text
-User types in AiSH terminal
-        ↓
-AiSH input layer captures current line
-        ↓
-Mode router
-        ↓
-Normal Mode  → pass through only
-History Mode → local history scorer
-AI Mode      → local model + project context
-        ↓
-Suggestion UI
-        ↓
-User accepts suggestion
-        ↓
-Command is sent to the real shell
+- explain a command
+- suggest alternatives
+- debug an error
+- turn natural language into a command
+- summarize project context
 ```
 
-## Technical Direction
+AI Ask is explicit. It should not run on every keystroke.
 
-Recommended stack:
+## Context Controls
+
+AiSH must make context visible and controllable.
 
 ```text
-Desktop app:      Tauri + React
-Terminal UI:      xterm.js
-Native backend:   Rust
-Windows shell:    ConPTY
-macOS/Linux PTY:  Unix PTY
-Local storage:    SQLite
-Model runtime:    ONNX Runtime first, optional GGUF later
+Context toggle: on/off
+Context scope:
+  - none
+  - cwd only
+  - project files
+  - git state
+  - package metadata
+  - recent terminal output
+  - selected text only
 ```
 
-Recommended repo shape:
+The user should be able to see what context is being used before AI runs.
+
+## Cache Controls
+
+AiSH should cache local data for speed, but expose controls.
 
 ```text
-aish/
-├── apps/
-│   └── desktop/
-├── crates/
-│   ├── aish-core/
-│   ├── aish-pty/
-│   ├── aish-history/
-│   ├── aish-completion/
-│   ├── aish-ai/
-│   └── aish-context/
-├── models/
-├── docs/
-│   └── MODEL_TRAINING_PLAN.md
-└── README.md
+Cache types:
+- command history index
+- project detection cache
+- package script cache
+- git branch cache
+- AI response cache
+- model metadata cache
 ```
 
-## First Release Scope
-
-The first version should focus on:
+Cache rules:
 
 ```text
-- standalone terminal app
-- running real shells inside AiSH
-- mode switching
-- command history storage
-- history-based ghost suggestions
-- dropdown suggestions
-- project-aware completions for npm, git, docker, make, cargo, python
-- safety checks for dangerous AI-generated commands
+- local-first
+- clearable
+- scoped per project/user
+- no hidden cloud sync
+- no model call on every keystroke
 ```
 
-The first version does not need a full generative model. A deterministic completion engine plus a lightweight ranker is the safer path.
+## Safety
 
-## Safety Rules
+AiSH must never silently execute risky suggestions.
 
-AiSH should not silently suggest destructive commands.
-
-Examples of high-risk commands:
+High-risk examples:
 
 ```text
 rm -rf
@@ -169,25 +184,74 @@ git reset --hard
 docker system prune
 kubectl delete
 npm publish
+terraform apply
+format
 chmod -R 777
 ```
 
-For risky commands, AiSH should require extra confirmation, show a warning, or avoid suggesting the command entirely.
+Risky actions require confirmation and a clear explanation.
 
-## Project Status
-
-This repository has been reset for the new AiSH direction.
-
-Old plan:
+## Target Platforms
 
 ```text
-Python CLI that uses cloud/offline LLMs to generate and execute commands
+Windows:
+  - standalone app with PowerShell first
+  - cmd support
+  - Git Bash support
+  - PowerShell provider/module
+
+macOS:
+  - standalone app
+  - Zsh provider
+  - Bash provider
+
+Linux:
+  - standalone app
+  - Bash provider
+  - Zsh provider
+  - Fish provider
 ```
 
-New plan:
+## Recommended Repo Shape
 
 ```text
-Cross-platform standalone terminal app with Normal, History, and AI modes
+aish/
+├── apps/
+│   └── desktop/              # Tauri + React app
+├── crates/
+│   ├── aish-core/            # shared types, mode router, config
+│   ├── aish-pty/             # PTY and shell sessions
+│   ├── aish-context/         # cwd/project/git/package context
+│   ├── aish-history/         # SQLite history and events
+│   ├── aish-completion/      # deterministic candidates and ranker hooks
+│   ├── aish-ai/              # local model integration and command cards
+│   ├── aish-safety/          # deterministic risk classifier
+│   └── aish-provider/        # provider protocol shared by shells
+├── providers/
+│   ├── powershell/
+│   ├── bash/
+│   ├── zsh/
+│   ├── fish/
+│   └── cmd/
+├── models/
+├── docs/
+└── README.md
 ```
 
-See [`docs/MODEL_TRAINING_PLAN.md`](docs/MODEL_TRAINING_PLAN.md) for the model-training roadmap.
+## First Build Target
+
+Build in this order:
+
+```text
+1. Desktop app shell with terminal view
+2. Windows PowerShell PTY backend
+3. Normal / History / AI mode switcher
+4. Local history store
+5. Deterministic completion engine
+6. Provider protocol
+7. PowerShell provider
+8. AI command-card integration
+9. Model cache and context controls
+```
+
+Ken is useful, but AiSH should not wait for Ken to be perfect. The product should work first with deterministic history/project completions, then plug in local AI as an optional layer.
