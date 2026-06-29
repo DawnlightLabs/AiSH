@@ -1,6 +1,0 @@
-{
-  "buildCommand": "node scripts/copy-site.mjs",
-  "outputDirectory": "site",
-  "cleanUrls": true,
-  "trailingSlash": true
-}
