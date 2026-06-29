@@ -123,12 +123,97 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
         .output()
         .map_err(|error| format!("Failed to start local model runtime: {error}"))?;
 
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
     Ok(ModelRunResult {
         ok: output.status.success(),
         command_line,
-        output: String::from_utf8_lossy(&output.stdout).to_string(),
-        error: String::from_utf8_lossy(&output.stderr).to_string(),
+        output: clean_model_output(&stdout),
+        error: if output.status.success() { String::new() } else { clean_runtime_text(&stderr) },
     })
+}
+
+fn clean_model_output(raw: &str) -> String {
+    if let Some(json) = extract_json_object(raw) {
+        return json;
+    }
+
+    let text = clean_runtime_text(raw);
+    if text.trim().is_empty() {
+        "No model response returned.".to_string()
+    } else {
+        text
+    }
+}
+
+fn clean_runtime_text(raw: &str) -> String {
+    let mut kept = Vec::new();
+    let mut skipping_prompt = false;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.contains("llama.cpp") || trimmed.starts_with("build") || trimmed.starts_with("model") || trimmed.starts_with("modalities") {
+            continue;
+        }
+        if trimmed == "available commands:" || trimmed.starts_with("/exit") || trimmed.starts_with("/regen") || trimmed.starts_with("/clear") || trimmed.starts_with("/read") || trimmed.starts_with("/glob") {
+            continue;
+        }
+        if trimmed.starts_with('>') {
+            skipping_prompt = true;
+            continue;
+        }
+        if skipping_prompt && (trimmed.starts_with("Schema ") || trimmed.starts_with("Rules:") || trimmed.starts_with("User request:") || trimmed.starts_with("Context JSON:")) {
+            continue;
+        }
+        if trimmed.starts_with("[") && trimmed.contains("thinking") {
+            continue;
+        }
+        kept.push(line);
+    }
+
+    kept.join("\n").trim().to_string()
+}
+
+fn extract_json_object(text: &str) -> Option<String> {
+    let needle = "\"action_type\"";
+    let anchor = text.rfind(needle)?;
+    let start = text[..anchor].rfind('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in text[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                let end = start + offset + ch.len_utf8();
+                return Some(text[start..end].trim().trim_matches('`').trim().to_string());
+            }
+        }
+    }
+
+    None
 }
 
 pub fn default_timeout() -> Duration {
