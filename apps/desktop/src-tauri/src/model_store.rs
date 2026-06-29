@@ -6,6 +6,21 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn user_home() -> String {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| "C:/Users/Amaan".to_string())
+        .replace('\\', "/")
+}
+
+fn models_dir() -> PathBuf {
+    PathBuf::from(user_home()).join("Downloads").join("aish-model").join("models")
+}
+
+fn llama_cli_path() -> String {
+    format!("{}/Downloads/llama.cpp/build/bin/Release/llama-cli.exe", user_home())
+}
+
 fn candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -41,19 +56,21 @@ fn read_profiles(path: &Path) -> Result<Vec<ModelProfile>, String> {
 }
 
 pub fn list_profiles() -> Result<Vec<ModelProfile>, String> {
-    let mut errors = Vec::new();
-
     for path in candidate_paths() {
         if path.exists() {
             match read_profiles(&path) {
                 Ok(profiles) if !profiles.is_empty() => return Ok(profiles),
-                Ok(_) => errors.push(format!("{} contained no profiles", path.display())),
-                Err(error) => errors.push(error),
+                _ => continue,
             }
         }
     }
 
-    Ok(default_profiles())
+    let discovered = discover_gguf_profiles();
+    if !discovered.is_empty() {
+        return Ok(discovered);
+    }
+
+    Ok(expected_profiles())
 }
 
 pub fn save_profiles(profiles: Vec<ModelProfile>) -> Result<Vec<ModelProfile>, String> {
@@ -71,29 +88,120 @@ pub fn find_profile(id: &str) -> Result<ModelProfile, String> {
         .ok_or_else(|| format!("missing profile: {id}"))
 }
 
-fn default_profiles() -> Vec<ModelProfile> {
-    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:/Users/Amaan".to_string()).replace('\\', "/");
-    let models = format!("{home}/Downloads/aish-model/models");
-    let llama = format!("{home}/Downloads/llama.cpp/build/bin/Release/llama-cli.exe");
+fn discover_gguf_profiles() -> Vec<ModelProfile> {
+    let dir = models_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+
+    let mut profiles: Vec<ModelProfile> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("gguf")))
+        .map(profile_from_path)
+        .collect();
+
+    profiles.sort_by(|a, b| a.label.cmp(&b.label));
+    profiles
+}
+
+fn profile_from_path(path: PathBuf) -> ModelProfile {
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("model.gguf");
+    let stem = path.file_stem().and_then(|name| name.to_str()).unwrap_or(file_name);
+    let lower = stem.to_lowercase();
+
+    ModelProfile {
+        id: sanitize_id(stem),
+        label: label_from_stem(stem),
+        family: family_from_name(&lower),
+        model_path: path.display().to_string().replace('\\', "/"),
+        llama_cli_path: llama_cli_path(),
+        context_tokens: context_tokens_for(&lower),
+        max_tokens: 512,
+        temperature: 0.1,
+    }
+}
+
+fn expected_profiles() -> Vec<ModelProfile> {
+    let root = models_dir().display().to_string().replace('\\', "/");
+    let llama = llama_cli_path();
 
     vec![
-        profile("ken-v01-f16", "Ken v0.1 F16", "kenwin", &format!("{models}/kenwin-v0.1-f16.gguf"), &llama),
-        profile("ken-v01-q4", "Ken v0.1 Q4_K_M", "kenwin", &format!("{models}/kenwin-v0.1-q4_k_m.gguf"), &llama),
-        profile("ken-v02-f16", "Ken v0.2 targeted F16", "kenwin", &format!("{models}/kenwin-v0.2-targeted-f16.gguf"), &llama),
-        profile("ken-v02-q4", "Ken v0.2 targeted Q4_K_M", "kenwin", &format!("{models}/kenwin-v0.2-targeted-q4_k_m.gguf"), &llama),
-        profile("sairaj-qwen25-coder-q4", "Sairaj Qwen2.5 Coder 1.5B Q4_K_M", "baseline", &format!("{models}/qwen2.5-coder-1.5b-instruct.Q4_K_M.gguf"), &llama),
+        profile("qwen25-coder-05b-q4", "Qwen2.5 Coder 0.5B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"), &llama, 32768),
+        profile("qwen25-coder-15b-q4", "Qwen2.5 Coder 1.5B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"), &llama, 32768),
+        profile("qwen25-coder-3b-q4", "Qwen2.5 Coder 3B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/qwen2.5-coder-3b-instruct-q4_k_m.gguf"), &llama, 32768),
+        profile("qwen3-06b-q4", "Qwen3 0.6B Q4_K_M", "qwen3", &format!("{root}/qwen3-0.6b-q4_k_m.gguf"), &llama, 32768),
+        profile("qwen3-17b-q4", "Qwen3 1.7B Q4_K_M", "qwen3", &format!("{root}/qwen3-1.7b-q4_k_m.gguf"), &llama, 32768),
+        profile("qwen35-08b-q4", "Qwen3.5 0.8B Q4_K_M", "qwen3.5", &format!("{root}/qwen3.5-0.8b-q4_k_m.gguf"), &llama, 32768),
+        profile("qwen35-2b-q4", "Qwen3.5 2B Q4_K_M", "qwen3.5", &format!("{root}/qwen3.5-2b-q4_k_m.gguf"), &llama, 32768),
+        profile("deepseek-coder-13b-q4", "DeepSeek Coder 1.3B Instruct Q4_K_M", "deepseek-coder", &format!("{root}/deepseek-coder-1.3b-instruct-q4_k_m.gguf"), &llama, 16384),
+        profile("codegemma-2b-q4", "CodeGemma 2B Q4_K_M", "codegemma", &format!("{root}/codegemma-2b-q4_k_m.gguf"), &llama, 8192),
     ]
 }
 
-fn profile(id: &str, label: &str, family: &str, model_path: &str, llama_cli_path: &str) -> ModelProfile {
+fn profile(id: &str, label: &str, family: &str, model_path: &str, llama_cli_path: &str, context_tokens: usize) -> ModelProfile {
     ModelProfile {
         id: id.to_string(),
         label: label.to_string(),
         family: family.to_string(),
         model_path: model_path.to_string(),
         llama_cli_path: llama_cli_path.to_string(),
-        context_tokens: 4096,
-        max_tokens: 384,
+        context_tokens,
+        max_tokens: 512,
         temperature: 0.1,
+    }
+}
+
+fn sanitize_id(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn label_from_stem(stem: &str) -> String {
+    stem.replace(['_', '-'], " ")
+        .split_whitespace()
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn family_from_name(name: &str) -> String {
+    if name.contains("qwen2.5-coder") || name.contains("qwen25-coder") || name.contains("qwen-2.5-coder") {
+        "qwen2.5-coder".to_string()
+    } else if name.contains("qwen3.5") || name.contains("qwen35") {
+        "qwen3.5".to_string()
+    } else if name.contains("qwen3") {
+        "qwen3".to_string()
+    } else if name.contains("deepseek") {
+        "deepseek-coder".to_string()
+    } else if name.contains("codegemma") {
+        "codegemma".to_string()
+    } else if name.contains("stable-code") || name.contains("stablecode") {
+        "stable-code".to_string()
+    } else {
+        "generic".to_string()
+    }
+}
+
+fn context_tokens_for(name: &str) -> usize {
+    if name.contains("codegemma") {
+        8192
+    } else if name.contains("deepseek") {
+        16384
+    } else {
+        32768
     }
 }
