@@ -10,6 +10,7 @@ fn main() {
             commands::inspect_project,
             commands::complete,
             commands::check_command_risk,
+            commands::execute_shell_command,
             commands::list_model_profiles,
             commands::save_model_profiles,
             commands::run_local_model,
