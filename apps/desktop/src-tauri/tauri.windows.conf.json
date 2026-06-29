@@ -9,7 +9,8 @@
     ],
     "windows": {
       "wix": {
-        "language": "en-US"
+        "language": "en-US",
+        "bannerPath": "installer/wix-banner.bmp"
       }
     }
   }
