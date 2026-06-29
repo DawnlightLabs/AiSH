@@ -117,7 +117,7 @@ fn profile_from_path(path: PathBuf) -> ModelProfile {
         model_path: path.display().to_string().replace('\\', "/"),
         llama_cli_path: llama_cli_path(),
         context_tokens: context_tokens_for(&lower),
-        max_tokens: 512,
+        max_tokens: 192,
         temperature: 0.1,
     }
 }
@@ -127,23 +127,23 @@ fn expected_profiles() -> Vec<ModelProfile> {
     let llama = llama_cli_path();
 
     vec![
-        profile("qwen2-5-coder-1-5b-instruct-q4-k-m", "Qwen2.5 Coder 1.5B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"), &llama, 32768),
-        profile("qwen3-5-2b-q4-k-m", "Qwen3.5 2B Q4_K_M", "qwen3.5", &format!("{root}/Qwen3.5-2B-Q4_K_M.gguf"), &llama, 32768),
-        profile("qwen3-5-0-8b-q4-k-m", "Qwen3.5 0.8B Q4_K_M", "qwen3.5", &format!("{root}/Qwen3.5-0.8B-Q4_K_M.gguf"), &llama, 32768),
-        profile("qwen3-1-7b-q4-k-m", "Qwen3 1.7B Q4_K_M", "qwen3", &format!("{root}/Qwen3-1.7B-Q4_K_M.gguf"), &llama, 32768),
-        profile("qwen3-0-6b-q4-k-m", "Qwen3 0.6B Q4_K_M", "qwen3", &format!("{root}/Qwen3-0.6B-Q4_K_M.gguf"), &llama, 32768),
+        profile("qwen2-5-coder-1-5b-instruct-q4-k-m", "Qwen2.5 Coder 1.5B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"), &llama),
+        profile("qwen3-5-2b-q4-k-m", "Qwen3.5 2B Q4_K_M", "qwen3.5", &format!("{root}/Qwen3.5-2B-Q4_K_M.gguf"), &llama),
+        profile("qwen3-5-0-8b-q4-k-m", "Qwen3.5 0.8B Q4_K_M", "qwen3.5", &format!("{root}/Qwen3.5-0.8B-Q4_K_M.gguf"), &llama),
+        profile("qwen3-1-7b-q4-k-m", "Qwen3 1.7B Q4_K_M", "qwen3", &format!("{root}/Qwen3-1.7B-Q4_K_M.gguf"), &llama),
+        profile("qwen3-0-6b-q4-k-m", "Qwen3 0.6B Q4_K_M", "qwen3", &format!("{root}/Qwen3-0.6B-Q4_K_M.gguf"), &llama),
     ]
 }
 
-fn profile(id: &str, label: &str, family: &str, model_path: &str, llama_cli_path: &str, context_tokens: usize) -> ModelProfile {
+fn profile(id: &str, label: &str, family: &str, model_path: &str, llama_cli_path: &str) -> ModelProfile {
     ModelProfile {
         id: id.to_string(),
         label: label.to_string(),
         family: family.to_string(),
         model_path: model_path.to_string(),
         llama_cli_path: llama_cli_path.to_string(),
-        context_tokens,
-        max_tokens: 512,
+        context_tokens: 4096,
+        max_tokens: 192,
         temperature: 0.1,
     }
 }
@@ -181,7 +181,7 @@ fn family_from_name(name: &str) -> String {
 }
 
 fn context_tokens_for(_name: &str) -> usize {
-    32768
+    4096
 }
 
 fn model_priority(id: &str) -> usize {
