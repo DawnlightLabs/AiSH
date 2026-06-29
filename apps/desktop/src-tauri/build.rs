@@ -24,8 +24,11 @@ const APP_ICON_ICNS: &[u8] = &[
 
 fn main() {
     ensure_icons();
-    let installer_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set")).join("installer");
-    fs::create_dir_all(installer_dir).expect("failed to create installer directory");
+    let base = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
+    let art_dir = base.join("installer");
+    fs::create_dir_all(&art_dir).expect("failed to create artwork directory");
+    create_bmp(&art_dir.join("wix-banner.bmp"), 493, 58, true);
+    create_bmp(&art_dir.join("wix-dialog.bmp"), 493, 312, false);
     tauri_build::build();
 }
 
@@ -39,6 +42,69 @@ fn ensure_icons() {
     write_if_missing(&icons_dir.join("32x32.png"), APP_ICON_PNG);
     write_if_missing(&icons_dir.join("128x128.png"), APP_ICON_PNG);
     write_if_missing(&icons_dir.join("128x128@2x.png"), APP_ICON_PNG);
+}
+
+fn create_bmp(path: &Path, width: usize, height: usize, small: bool) {
+    let stride = (width * 3 + 3) & !3;
+    let image_size = stride * height;
+    let file_size = 54 + image_size;
+    let mut data = Vec::with_capacity(file_size);
+    data.extend_from_slice(b"BM");
+    data.extend_from_slice(&(file_size as u32).to_le_bytes());
+    data.extend_from_slice(&[0, 0, 0, 0]);
+    data.extend_from_slice(&(54u32).to_le_bytes());
+    data.extend_from_slice(&(40u32).to_le_bytes());
+    data.extend_from_slice(&(width as i32).to_le_bytes());
+    data.extend_from_slice(&(height as i32).to_le_bytes());
+    data.extend_from_slice(&(1u16).to_le_bytes());
+    data.extend_from_slice(&(24u16).to_le_bytes());
+    data.extend_from_slice(&(0u32).to_le_bytes());
+    data.extend_from_slice(&(image_size as u32).to_le_bytes());
+    data.extend_from_slice(&(2835u32).to_le_bytes());
+    data.extend_from_slice(&(2835u32).to_le_bytes());
+    data.extend_from_slice(&(0u32).to_le_bytes());
+    data.extend_from_slice(&(0u32).to_le_bytes());
+
+    for y in (0..height).rev() {
+        let row_start = data.len();
+        for x in 0..width {
+            let (r, g, b) = art_pixel(x, y, width, height, small);
+            data.extend_from_slice(&[b, g, r]);
+        }
+        while data.len() - row_start < stride {
+            data.push(0);
+        }
+    }
+    fs::write(path, data).unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
+}
+
+fn art_pixel(x: usize, y: usize, width: usize, height: usize, small: bool) -> (u8, u8, u8) {
+    let t = x as f32 / width as f32;
+    let shade = y as f32 / height as f32;
+    let mut r = (248.0 - 32.0 * t - 8.0 * shade) as u8;
+    let mut g = (244.0 - 35.0 * t - 11.0 * shade) as u8;
+    let mut b = (234.0 - 42.0 * t - 14.0 * shade) as u8;
+
+    if !small && x < 172 {
+        r = (58.0 - 30.0 * shade) as u8;
+        g = (50.0 - 28.0 * shade) as u8;
+        b = (42.0 - 24.0 * shade) as u8;
+    }
+
+    let (ox, oy, size) = if small { (420, 10, 38) } else { (54, 44, 74) };
+    if x >= ox && x < ox + size && y >= oy && y < oy + size {
+        let lx = x - ox;
+        let ly = y - oy;
+        let edge = lx < 3 || ly < 3 || lx > size - 4 || ly > size - 4;
+        let eye = (ly > size / 2 - 4 && ly < size / 2 + 4) && ((lx > size / 3 - 4 && lx < size / 3 + 4) || (lx > size * 2 / 3 - 4 && lx < size * 2 / 3 + 4));
+        let cursor = ly > size * 2 / 3 && ly < size * 2 / 3 + 4 && lx > size / 2 - 12 && lx < size / 2 + 12;
+        if edge || eye || cursor {
+            return (245, 239, 222);
+        }
+        return (35, 30, 25);
+    }
+
+    (r, g, b)
 }
 
 fn write_if_missing(path: &Path, bytes: &[u8]) {
