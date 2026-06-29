@@ -1,6 +1,6 @@
 use aish_core::Card;
 use serde::{Deserialize, Serialize};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,8 +39,8 @@ impl Default for ModelProfile {
             family: "generic".to_string(),
             model_path: String::new(),
             llama_cli_path: "llama-cli".to_string(),
-            context_tokens: 32768,
-            max_tokens: 512,
+            context_tokens: 4096,
+            max_tokens: 192,
             temperature: 0.1,
         }
     }
@@ -94,6 +94,7 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
 
     let mut command = Command::new(&request.profile.llama_cli_path);
     command
+        .stdin(Stdio::null())
         .arg("-m")
         .arg(&request.profile.model_path)
         .arg("-p")
