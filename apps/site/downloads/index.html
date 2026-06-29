@@ -11,21 +11,25 @@
     <canvas id="field" aria-hidden="true"></canvas>
     <header class="nav">
       <a class="brand" href="../"><span class="mark">Ai</span><span>AiSH</span></a>
-      <nav><a href="../#product">Product</a><a href="../#architecture">Architecture</a><a href="./">Downloads</a><a href="https://github.com/amaansyed27/aish/releases">Releases</a></nav>
+      <nav><a href="../#product">Product</a><a href="../#architecture">Architecture</a><a href="./">Downloads</a><a href="https://github.com/amaansyed27/aish/releases/latest">Latest release</a></nav>
     </header>
     <main>
       <section class="hero reveal" style="min-height:auto;grid-template-columns:1fr;padding-bottom:40px">
         <p class="eyebrow">Downloads</p>
         <h1>Install AiSH on Windows, macOS, and Linux.</h1>
-        <p class="lead">Release artifacts are published from GitHub Actions. Each release should include the desktop installer and the provider shell binary for that OS.</p>
+        <p class="lead">Release builds are published from GitHub Actions. Use the platform archive below, then choose the desktop installer or provider shell binary inside it.</p>
+        <div class="cta-row">
+          <a class="primary" href="https://github.com/amaansyed27/aish/releases/latest">Open latest release</a>
+          <a class="secondary" href="https://github.com/amaansyed27/aish/releases">All releases</a>
+        </div>
       </section>
       <section class="grid reveal">
-        <article><span class="pill">WIN</span><h2>Windows</h2><p>Use the MSI for the desktop app. Use the provider shell binary or terminal setup flow for shell-only testing.</p><a class="secondary" href="https://github.com/amaansyed27/aish/releases">Get MSI</a></article>
-        <article><span class="pill">MAC</span><h2>macOS</h2><p>Use the DMG or app bundle from the macOS build artifact. Gatekeeper trust requires signing and notarization for public launch.</p><a class="secondary" href="https://github.com/amaansyed27/aish/releases">Get DMG</a></article>
-        <article><span class="pill">LIN</span><h2>Linux</h2><p>Use DEB first. RPM and AppImage are supported as follow-up release targets.</p><a class="secondary" href="https://github.com/amaansyed27/aish/releases">Get Linux builds</a></article>
+        <article><span class="pill">WIN</span><h2>Windows</h2><p>Includes the MSI desktop installer and the AiSH provider shell executable.</p><a class="secondary" href="https://github.com/amaansyed27/aish/releases/latest/download/aish-windows.zip">Download Windows ZIP</a></article>
+        <article><span class="pill">MAC</span><h2>macOS</h2><p>Includes the DMG desktop installer and the AiSH provider shell binary. Public launch builds should be signed and notarized.</p><a class="secondary" href="https://github.com/amaansyed27/aish/releases/latest/download/aish-macos.zip">Download macOS ZIP</a></article>
+        <article><span class="pill">LIN</span><h2>Linux</h2><p>Includes DEB, RPM, AppImage, and the AiSH provider shell binary.</p><a class="secondary" href="https://github.com/amaansyed27/aish/releases/latest/download/aish-linux.zip">Download Linux ZIP</a></article>
       </section>
       <section class="split reveal">
-        <div><p class="eyebrow">CLI install</p><h2>Terminal install path stays available.</h2><p>Provider shell install is kept separate for developers who want direct terminal integration before the full desktop bundle flow is finalized.</p></div>
+        <div><p class="eyebrow">CLI install</p><h2>Terminal install path stays available.</h2><p>The provider shell can still be installed from source for developers who want direct shell integration before using the desktop bundle.</p></div>
         <div class="terminal-card"><div class="terminal-top"><span></span><span></span><span></span><b>Install commands</b></div><pre><code>Windows: scripts/install.ps1
 macOS/Linux: scripts/install-unix.sh
 Provider shell: aish</code></pre></div>
