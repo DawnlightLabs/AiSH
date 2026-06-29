@@ -52,4 +52,5 @@ jobs:
           name: aish-${{ matrix.os }}
           path: |
             dist/provider-shell/**
+            target/release/bundle/**
             apps/desktop/src-tauri/target/release/bundle/**
