@@ -77,7 +77,7 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
     match parts.next().unwrap_or_default() {
         "/exit" | "/quit" => return true,
         "/help" => print_help(),
-        "/setup" => setup::handle_setup_args(),
+        "/setup" => setup::run_setup_wizard(false),
         "/status" => {
             println!("os: {}", env::consts::OS);
             println!("shell: {}", shell_name());
