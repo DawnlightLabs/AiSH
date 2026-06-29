@@ -8,6 +8,8 @@
     "apps/site"
   ],
   "scripts": {
+    "dev": "npm run site:dev",
+    "build": "npm run site:build",
     "site:dev": "npm --workspace apps/site run dev",
     "site:build": "npm --workspace apps/site run build",
     "site:preview": "npm --workspace apps/site run preview",
