@@ -6,7 +6,6 @@ import { useAiRun } from './hooks/useAiRun';
 import { AppChrome } from './components/chrome/AppChrome';
 import { TerminalCanvas } from './components/terminal/TerminalCanvas';
 import { CommandComposer } from './components/terminal/CommandComposer';
-import { WorkingTrace } from './components/terminal/WorkingTrace';
 import { SettingsDrawer } from './components/settings/SettingsDrawer';
 
 const firstTab = { id: 'tab-1', title: 'PowerShell', cwd: '~' };
@@ -79,16 +78,15 @@ export default function App() {
   async function submitPrompt() {
     const text = input.trim();
     if (!text) return;
-    await ai.runIntent(text);
     setInput('');
+    await ai.runIntent(text);
   }
 
   return (
     <main className="app-shell">
       <AppChrome backendStatus={backend} cwd={cwd} tabs={tabs} activeTabId={activeTabId} profiles={profiles} selectedProfileId={selectedProfileId} settingsOpen={settingsOpen} onSelectProfile={setSelectedProfileId} onNewTab={newTab} onSelectTab={setActiveTabId} onCloseTab={closeTab} onToggleSettings={() => setSettingsOpen((open) => !open)} />
       <section className="terminal-shell">
-        <TerminalCanvas cwd={cwd} result={ai.result} error={ai.error} lastIntent={ai.lastIntent} busy={ai.isRunning} />
-        <WorkingTrace result={ai.result} error={ai.error} />
+        <TerminalCanvas cwd={cwd} entries={ai.entries} />
         <CommandComposer ref={inputRef} cwd={cwd} value={input} disabled={ai.isRunning} onChange={setInput} onSubmit={submitPrompt} />
       </section>
       <SettingsDrawer open={settingsOpen} cwd={cwd} profiles={profiles} selectedProfileId={selectedProfileId} onSelectProfile={setSelectedProfileId} onClose={() => setSettingsOpen(false)} />
