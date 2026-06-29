@@ -1,0 +1,6 @@
+{
+  "buildCommand": null,
+  "outputDirectory": "apps/site",
+  "cleanUrls": true,
+  "trailingSlash": true
+}
