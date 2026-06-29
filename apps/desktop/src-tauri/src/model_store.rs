@@ -101,7 +101,7 @@ fn discover_gguf_profiles() -> Vec<ModelProfile> {
         .map(profile_from_path)
         .collect();
 
-    profiles.sort_by(|a, b| a.label.cmp(&b.label));
+    profiles.sort_by_key(|profile| model_priority(&profile.id));
     profiles
 }
 
@@ -127,15 +127,11 @@ fn expected_profiles() -> Vec<ModelProfile> {
     let llama = llama_cli_path();
 
     vec![
-        profile("qwen25-coder-05b-q4", "Qwen2.5 Coder 0.5B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"), &llama, 32768),
-        profile("qwen25-coder-15b-q4", "Qwen2.5 Coder 1.5B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"), &llama, 32768),
-        profile("qwen25-coder-3b-q4", "Qwen2.5 Coder 3B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/qwen2.5-coder-3b-instruct-q4_k_m.gguf"), &llama, 32768),
-        profile("qwen3-06b-q4", "Qwen3 0.6B Q4_K_M", "qwen3", &format!("{root}/qwen3-0.6b-q4_k_m.gguf"), &llama, 32768),
-        profile("qwen3-17b-q4", "Qwen3 1.7B Q4_K_M", "qwen3", &format!("{root}/qwen3-1.7b-q4_k_m.gguf"), &llama, 32768),
-        profile("qwen35-08b-q4", "Qwen3.5 0.8B Q4_K_M", "qwen3.5", &format!("{root}/qwen3.5-0.8b-q4_k_m.gguf"), &llama, 32768),
-        profile("qwen35-2b-q4", "Qwen3.5 2B Q4_K_M", "qwen3.5", &format!("{root}/qwen3.5-2b-q4_k_m.gguf"), &llama, 32768),
-        profile("deepseek-coder-13b-q4", "DeepSeek Coder 1.3B Instruct Q4_K_M", "deepseek-coder", &format!("{root}/deepseek-coder-1.3b-instruct-q4_k_m.gguf"), &llama, 16384),
-        profile("codegemma-2b-q4", "CodeGemma 2B Q4_K_M", "codegemma", &format!("{root}/codegemma-2b-q4_k_m.gguf"), &llama, 8192),
+        profile("qwen2-5-coder-1-5b-instruct-q4-k-m", "Qwen2.5 Coder 1.5B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"), &llama, 32768),
+        profile("qwen3-5-2b-q4-k-m", "Qwen3.5 2B Q4_K_M", "qwen3.5", &format!("{root}/Qwen3.5-2B-Q4_K_M.gguf"), &llama, 32768),
+        profile("qwen3-5-0-8b-q4-k-m", "Qwen3.5 0.8B Q4_K_M", "qwen3.5", &format!("{root}/Qwen3.5-0.8B-Q4_K_M.gguf"), &llama, 32768),
+        profile("qwen3-1-7b-q4-k-m", "Qwen3 1.7B Q4_K_M", "qwen3", &format!("{root}/Qwen3-1.7B-Q4_K_M.gguf"), &llama, 32768),
+        profile("qwen3-0-6b-q4-k-m", "Qwen3 0.6B Q4_K_M", "qwen3", &format!("{root}/Qwen3-0.6B-Q4_K_M.gguf"), &llama, 32768),
     ]
 }
 
@@ -165,43 +161,41 @@ fn sanitize_id(value: &str) -> String {
 }
 
 fn label_from_stem(stem: &str) -> String {
-    stem.replace(['_', '-'], " ")
-        .split_whitespace()
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    stem.replace('-', " ")
+        .replace("Q4 K M", "Q4_K_M")
+        .replace("Q5 K M", "Q5_K_M")
+        .replace("Q6 K", "Q6_K")
+        .replace("Q8 0", "Q8_0")
 }
 
 fn family_from_name(name: &str) -> String {
-    if name.contains("qwen2.5-coder") || name.contains("qwen25-coder") || name.contains("qwen-2.5-coder") {
+    if name.contains("qwen2.5-coder") || name.contains("qwen2-5-coder") || name.contains("qwen25-coder") {
         "qwen2.5-coder".to_string()
-    } else if name.contains("qwen3.5") || name.contains("qwen35") {
+    } else if name.contains("qwen3.5") || name.contains("qwen3-5") || name.contains("qwen35") {
         "qwen3.5".to_string()
     } else if name.contains("qwen3") {
         "qwen3".to_string()
-    } else if name.contains("deepseek") {
-        "deepseek-coder".to_string()
-    } else if name.contains("codegemma") {
-        "codegemma".to_string()
-    } else if name.contains("stable-code") || name.contains("stablecode") {
-        "stable-code".to_string()
     } else {
         "generic".to_string()
     }
 }
 
-fn context_tokens_for(name: &str) -> usize {
-    if name.contains("codegemma") {
-        8192
-    } else if name.contains("deepseek") {
-        16384
+fn context_tokens_for(_name: &str) -> usize {
+    32768
+}
+
+fn model_priority(id: &str) -> usize {
+    if id.contains("qwen2-5-coder-1-5b") || id.contains("qwen25-coder-15b") {
+        0
+    } else if id.contains("qwen3-5-2b") || id.contains("qwen35-2b") {
+        1
+    } else if id.contains("qwen3-5-0-8b") || id.contains("qwen35-08b") {
+        2
+    } else if id.contains("qwen3-1-7b") {
+        3
+    } else if id.contains("qwen3-0-6b") {
+        4
     } else {
-        32768
+        100
     }
 }
