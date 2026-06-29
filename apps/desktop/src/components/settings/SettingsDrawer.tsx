@@ -5,11 +5,13 @@ interface SettingsDrawerProps {
   cwd: string;
   profiles: ModelProfile[];
   selectedProfileId: string;
+  showFullReasoning: boolean;
   onSelectProfile: (id: string) => void;
+  onToggleFullReasoning: (value: boolean) => void;
   onClose: () => void;
 }
 
-export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, onSelectProfile, onClose }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, showFullReasoning, onSelectProfile, onToggleFullReasoning, onClose }: SettingsDrawerProps) {
   if (!open) return null;
 
   return (
@@ -31,16 +33,20 @@ export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, onSelec
             ))}
           </select>
         </label>
+        <label className="settings-check">
+          <input type="checkbox" checked={showFullReasoning} onChange={(event) => onToggleFullReasoning(event.target.checked)} />
+          <span>Show full AI Run trace in Working</span>
+        </label>
         <div className="settings-field">
-          <span>Directory</span>
-          <code>{cwd || '~'}</code>
+          <span>Shell</span>
+          <code>Live PowerShell session</code>
         </div>
         <div className="settings-field">
           <span>Keyboard</span>
-          <code>Ctrl+Space focus prompt · Ctrl+, settings · Ctrl+Shift+T new tab · Esc close</code>
+          <code>Ctrl+Space focus Ken · Ctrl+, settings · Ctrl+Shift+T new tab · Esc close</code>
         </div>
         <div className="settings-note">
-          Future modes stay hidden for now: Normal, cached history completion, and AI mode will later be cycled with Tab. Current build stays simple: one AI Run prompt with context gathered only when needed.
+          Normal mode hides the Ken composer. AI Run mode sends approved low-risk commands into the live shell and keeps details in Working.
         </div>
       </aside>
     </div>
