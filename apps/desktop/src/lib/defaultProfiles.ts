@@ -19,8 +19,4 @@ function profile(id: string, label: string, family: string, file: string, contex
 
 export const DEFAULT_MODEL_PROFILES: ModelProfile[] = [
   profile('qwen25-coder-15b-q4-k-m', 'Qwen2.5 Coder 1.5B Instruct Q4_K_M', 'qwen2.5-coder', 'Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf'),
-  profile('qwen35-2b-q4-k-m', 'Qwen3.5 2B Q4_K_M', 'qwen3.5', 'Qwen3.5-2B-Q4_K_M.gguf'),
-  profile('qwen35-08b-q4-k-m', 'Qwen3.5 0.8B Q4_K_M', 'qwen3.5', 'Qwen3.5-0.8B-Q4_K_M.gguf'),
-  profile('qwen3-17b-q4-k-m', 'Qwen3 1.7B Q4_K_M', 'qwen3', 'Qwen3-1.7B-Q4_K_M.gguf'),
-  profile('qwen3-06b-q4-k-m', 'Qwen3 0.6B Q4_K_M', 'qwen3', 'Qwen3-0.6B-Q4_K_M.gguf'),
 ];
