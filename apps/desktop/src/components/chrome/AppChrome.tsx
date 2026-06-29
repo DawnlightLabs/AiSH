@@ -21,7 +21,11 @@ export function AppChrome({ backendStatus, tabs, activeTabId, profiles, selected
   return (
     <header className="app-chrome" data-tauri-drag-region>
       <div className="chrome-left" data-tauri-drag-region>
-        <div className="app-badge">Ai</div>
+        <div className="app-badge" title="AiSH by Dawnlight Labs">Ai</div>
+        <div className="brand-stack" data-tauri-drag-region>
+          <strong>AiSH</strong>
+          <small>Dawnlight Labs</small>
+        </div>
         <div className="tab-row">
           {tabs.map((tab) => (
             <button key={tab.id} type="button" className={tab.id === activeTabId ? 'tab active-tab' : 'tab'} onClick={() => onSelectTab(tab.id)}>
