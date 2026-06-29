@@ -9,11 +9,11 @@ interface CommandComposerProps {
 }
 
 const prompts = [
-  'Ask Ken to run a command...',
-  'Ask Ken to find a file...',
-  'Ask Ken to inspect this project...',
-  'Ask Ken to explain an error...',
-  'Ask Ken to search this folder...',
+  'Run a command...',
+  'Find a file...',
+  'Inspect this project...',
+  'Explain an error...',
+  'Search this folder...',
 ];
 
 export const CommandComposer = forwardRef<HTMLInputElement, CommandComposerProps>(function CommandComposer({ value, disabled, onChange, onSubmit }, ref) {
