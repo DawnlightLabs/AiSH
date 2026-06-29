@@ -77,10 +77,26 @@ impl AiRuntime for NullAiRuntime {
 }
 
 pub fn build_command_card_prompt(intent: &str, _context_json: &serde_json::Value) -> String {
-    format!(
-        "You convert natural language into one PowerShell command for AiSH. Return exactly one JSON object and nothing else. No markdown. No commentary. No thinking text.\n\nSchema: {{\"action_type\":\"command\",\"command\":\"...\",\"risk\":\"low|medium|high\",\"reason\":\"short reason\"}}\nFallback: {{\"action_type\":\"fallback_message\",\"fallback_message\":\"...\",\"reason\":\"short reason\"}}\n\nRules:\n- Use PowerShell on Windows.\n- The command will run inside the user's live PowerShell session. Do not invent an absolute current-directory path.\n- If the user does not name a path, use the live shell current directory by omitting -Path.\n- For current directory location, use: Get-Location\n- For listing files, use: Get-ChildItem\n- For list N largest files, use: Get-ChildItem -Recurse -Force -File -ErrorAction SilentlyContinue | Sort-Object -Property Length -Descending | Select-Object -First N Length,FullName\n- For git status, use: git status\n- For npm scripts, use: npm run\n- For finding a file or folder on a named drive, use Get-ChildItem with -Path like D:\\\\, -Recurse, -Force, -Filter, -ErrorAction SilentlyContinue, then Select-Object -ExpandProperty FullName.\n- Recursive searches and long read-only listings are low risk. They may take time, but they do not modify state.\n- Medium/high risk is only for destructive, irreversible, system-changing, network-changing, install, delete, move, write, permission, service, registry, deploy, publish, git reset, git clean, push, or cloud actions.\n- Do not use dir /s unless the user specifically asks for cmd.exe syntax.\n- Do not invent a path. If the user names a drive, search that drive.\n\nExamples:\nUser request: show current directory\n{{\"action_type\":\"command\",\"command\":\"Get-Location\",\"risk\":\"low\",\"reason\":\"Shows the current working directory.\"}}\nUser request: list 20 files in descending order\n{{\"action_type\":\"command\",\"command\":\"Get-ChildItem -Recurse -Force -File -ErrorAction SilentlyContinue | Sort-Object -Property Length -Descending | Select-Object -First 20 Length,FullName\",\"risk\":\"low\",\"reason\":\"Lists the largest files under the current live shell directory.\"}}\nUser request: where is report.pdf in d drive\n{{\"action_type\":\"command\",\"command\":\"Get-ChildItem -Path D:\\\\ -Recurse -Force -Filter 'report.pdf' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName\",\"risk\":\"low\",\"reason\":\"Searches the D drive and prints exact matching paths.\"}}\nUser request: delete all temp files\n{{\"action_type\":\"command\",\"command\":\"Remove-Item -Path .\\*.tmp -Force\",\"risk\":\"high\",\"reason\":\"Deletes files and requires approval.\"}}\n\nUser request: {}\n",
-        intent
-    )
+    let instructions = r#"You are Ken, the AiSH command planner.
+Return exactly one JSON object and nothing else.
+Use keys: action_type, command, risk, reason.
+The command must be a single runnable PowerShell command.
+
+The command runs in the user's live PowerShell session.
+Do not invent the current directory.
+If the request does not name a path, omit -Path and rely on the live shell location.
+Never output placeholder usernames, tutorial paths, or sample targets that are not in the user request.
+If a user-profile folder is named, build it from $env:USERPROFILE.
+When listing a folder, put the folder in -Path and do not also use that folder name as -Filter.
+Use -Filter only when searching for an unknown item by name.
+Use -File only when the user specifically asks for files.
+Use Select-Object -ExpandProperty FullName only when the user asks for exact paths or locations.
+Read-only inspection, recursive listing, sorting, and path search are low risk.
+State-changing or externally impactful actions are medium or high risk.
+Keep the reason short.
+"#;
+
+    format!("{instructions}\nUser request:\n{intent}\n")
 }
 
 pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String> {
