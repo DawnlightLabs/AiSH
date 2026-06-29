@@ -43,7 +43,11 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
       const cmd = String(card['com' + 'mand'] ?? '').trim();
       const risk = String(card.risk ?? 'medium');
       const reason = String(card.reason ?? '');
-      if (!cmd) { patch(id, { status: 'blocked', output: String(card.fallback_message ?? reason || 'No action available.'), reason }); return; }
+      if (!cmd) {
+        const message = String(card.fallback_message ?? (reason || 'No action available.'));
+        patch(id, { status: 'blocked', output: message, reason });
+        return;
+      }
       if (risk !== 'low') { patch(id, { status: 'blocked', command: cmd, risk, reason, output: 'Held for review. Expand Working for details.' }); return; }
 
       if (options.onLine) {
