@@ -45,10 +45,14 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
       const reason = String(card.reason ?? '');
       if (!cmd) { patch(id, { status: 'blocked', output: String(card.fallback_message ?? reason || 'No action available.'), reason }); return; }
       if (risk !== 'low') { patch(id, { status: 'blocked', command: cmd, risk, reason, output: 'Held for review. Expand Working for details.' }); return; }
-      if (!options.onLine) { patch(id, { status: 'error', command: cmd, risk, reason, error: 'Terminal is not ready.' }); return; }
-      patch(id, { status: 'running', command: cmd, risk, reason, output: 'Running in terminal...' });
-      await options.onLine(cmd);
-      patch(id, { status: 'done', command: cmd, risk, reason, output: 'Sent to terminal.' });
+
+      if (options.onLine) {
+        patch(id, { status: 'running', command: cmd, risk, reason, output: 'Running in terminal...' });
+        await options.onLine(cmd);
+        patch(id, { status: 'done', command: cmd, risk, reason, output: 'Sent to terminal.' });
+      } else {
+        patch(id, { status: 'done', command: cmd, risk, reason, output: cmd });
+      }
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
