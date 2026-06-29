@@ -9,6 +9,9 @@
   "scripts": {
     "desktop:dev": "npm --workspace apps/desktop run tauri dev",
     "desktop:build": "npm --workspace apps/desktop run tauri build",
-    "desktop:check": "npm --workspace apps/desktop run typecheck"
+    "desktop:check": "npm --workspace apps/desktop run typecheck",
+    "provider:build": "cargo build --release -p aish-provider-shell",
+    "provider:dev": "cargo run -p aish-provider-shell",
+    "package:all": "npm run desktop:build && npm run provider:build"
   }
 }
