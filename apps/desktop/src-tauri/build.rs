@@ -1,73 +1,98 @@
-use image::{imageops::FilterType, ImageFormat, Rgb, RgbImage, RgbaImage};
+use image::{imageops::FilterType, DynamicImage, ImageFormat, Rgb, RgbImage, RgbaImage};
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
-
-const APP_ICON_PNG: &[u8] = &[
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 16, 0, 0, 0, 16, 8, 6, 0,
-    0, 0, 31, 243, 255, 97, 0, 0, 0, 24, 73, 68, 65, 84, 120, 218, 99, 96, 8, 117, 248, 79, 17, 30,
-    53, 96, 212, 128, 81, 3, 134, 139, 1, 0, 96, 13, 148, 16, 206, 244, 68, 43, 0, 0, 0, 0, 73, 69,
-    78, 68, 174, 66, 96, 130,
-];
-
-const APP_ICON_ICO: &[u8] = &[
-    0, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0, 81, 0, 0, 0, 22, 0, 0, 0, 137, 80, 78, 71, 13, 10,
-    26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 16, 0, 0, 0, 16, 8, 6, 0, 0, 0, 31, 243, 255, 97,
-    0, 0, 0, 24, 73, 68, 65, 84, 120, 218, 99, 96, 8, 117, 248, 79, 17, 30, 53, 96, 212, 128, 81, 3,
-    134, 139, 1, 0, 96, 13, 148, 16, 206, 244, 68, 43, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
-];
-
-const APP_ICON_ICNS: &[u8] = &[
-    105, 99, 110, 115, 0, 0, 0, 97, 105, 99, 112, 52, 0, 0, 0, 89, 137, 80, 78, 71, 13, 10, 26, 10,
-    0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 16, 0, 0, 0, 16, 8, 6, 0, 0, 0, 31, 243, 255, 97, 0, 0, 0,
-    24, 73, 68, 65, 84, 120, 218, 99, 96, 8, 117, 248, 79, 17, 30, 53, 96, 212, 128, 81, 3, 134,
-    139, 1, 0, 96, 13, 148, 16, 206, 244, 68, 43, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
-];
 
 fn main() {
     println!("cargo:rerun-if-changed=app-icon.png");
-    ensure_icons();
 
     let base = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
+    let logo = load_app_icon(&base);
+
+    ensure_icons(&base, &logo);
+
     let art_dir = base.join("installer");
     fs::create_dir_all(&art_dir).expect("failed to create artwork directory");
-
-    let logo = load_app_icon(&base);
-    create_banner_bmp(&art_dir.join("wix-banner.bmp"), logo.as_ref());
-    create_dialog_bmp(&art_dir.join("wix-dialog.bmp"), logo.as_ref());
+    create_banner_bmp(&art_dir.join("wix-banner.bmp"), &logo);
+    create_dialog_bmp(&art_dir.join("wix-dialog.bmp"), &logo);
 
     tauri_build::build();
 }
 
-fn ensure_icons() {
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
-    let icons_dir = manifest_dir.join("icons");
+fn load_app_icon(base: &Path) -> RgbaImage {
+    let path = base.join("app-icon.png");
+    image::open(&path)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to load AiSH app icon at {}. Put the real square PNG at apps/desktop/src-tauri/app-icon.png before building: {error}",
+                path.display()
+            )
+        })
+        .to_rgba8()
+}
+
+fn ensure_icons(base: &Path, logo: &RgbaImage) {
+    let icons_dir = base.join("icons");
     fs::create_dir_all(&icons_dir).expect("failed to create icons directory");
 
-    write_if_missing(&icons_dir.join("icon.ico"), APP_ICON_ICO);
-    write_if_missing(&icons_dir.join("icon.icns"), APP_ICON_ICNS);
-    write_if_missing(&icons_dir.join("32x32.png"), APP_ICON_PNG);
-    write_if_missing(&icons_dir.join("128x128.png"), APP_ICON_PNG);
-    write_if_missing(&icons_dir.join("128x128@2x.png"), APP_ICON_PNG);
+    let png32 = resized_png(logo, 32);
+    let png128 = resized_png(logo, 128);
+    let png256 = resized_png(logo, 256);
+
+    write_bytes(&icons_dir.join("32x32.png"), &png32);
+    write_bytes(&icons_dir.join("128x128.png"), &png128);
+    write_bytes(&icons_dir.join("128x128@2x.png"), &png256);
+    write_bytes(&icons_dir.join("icon.png"), &png256);
+    write_png_ico(&icons_dir.join("icon.ico"), &png256);
+    write_icns(&icons_dir.join("icon.icns"), &png128, &png256);
 }
 
-fn load_app_icon(base: &Path) -> Option<RgbaImage> {
-    let path = base.join("app-icon.png");
-    image::open(&path).ok().map(|image| image.to_rgba8())
+fn resized_png(logo: &RgbaImage, size: u32) -> Vec<u8> {
+    let resized = image::imageops::resize(logo, size, size, FilterType::Lanczos3);
+    let mut cursor = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(resized)
+        .write_to(&mut cursor, ImageFormat::Png)
+        .expect("failed to encode resized PNG icon");
+    cursor.into_inner()
 }
 
-fn create_banner_bmp(path: &Path, logo: Option<&RgbaImage>) {
+fn write_png_ico(path: &Path, png256: &[u8]) {
+    let mut bytes = Vec::with_capacity(22 + png256.len());
+    bytes.extend_from_slice(&[0, 0, 1, 0, 1, 0]);
+    bytes.extend_from_slice(&[0, 0, 0, 0]);
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&32u16.to_le_bytes());
+    bytes.extend_from_slice(&(png256.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&22u32.to_le_bytes());
+    bytes.extend_from_slice(png256);
+    write_bytes(path, &bytes);
+}
+
+fn write_icns(path: &Path, png128: &[u8], png256: &[u8]) {
+    let total_len = 8 + 8 + png128.len() + 8 + png256.len();
+    let mut bytes = Vec::with_capacity(total_len);
+    bytes.extend_from_slice(b"icns");
+    bytes.extend_from_slice(&(total_len as u32).to_be_bytes());
+    push_icns_entry(&mut bytes, b"ic07", png128);
+    push_icns_entry(&mut bytes, b"ic08", png256);
+    write_bytes(path, &bytes);
+}
+
+fn push_icns_entry(bytes: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    bytes.extend_from_slice(kind);
+    bytes.extend_from_slice(&((data.len() + 8) as u32).to_be_bytes());
+    bytes.extend_from_slice(data);
+}
+
+fn create_banner_bmp(path: &Path, logo: &RgbaImage) {
     let mut image = RgbImage::new(493, 58);
     fill_light(&mut image);
     draw_separator(&mut image, 57, Rgb([210, 201, 184]));
-    if let Some(logo) = logo {
-        paste_logo(&mut image, logo, 418, 8, 42);
-    } else {
-        draw_fallback_mark(&mut image, 420, 10, 38, true);
-    }
+    paste_logo(&mut image, logo, 418, 8, 42);
     save_bmp(path, &image);
 }
 
-fn create_dialog_bmp(path: &Path, logo: Option<&RgbaImage>) {
+fn create_dialog_bmp(path: &Path, logo: &RgbaImage) {
     let mut image = RgbImage::new(493, 312);
     for y in 0..image.height() {
         for x in 0..image.width() {
@@ -90,12 +115,7 @@ fn create_dialog_bmp(path: &Path, logo: Option<&RgbaImage>) {
         }
     }
 
-    if let Some(logo) = logo {
-        paste_logo(&mut image, logo, 44, 68, 92);
-    } else {
-        draw_fallback_mark(&mut image, 54, 72, 74, false);
-    }
-
+    paste_logo(&mut image, logo, 28, 54, 116);
     save_bmp(path, &image);
 }
 
@@ -157,36 +177,12 @@ fn blend(src: u8, dst: u8, alpha: f32) -> u8 {
     (src as f32 * alpha + dst as f32 * (1.0 - alpha)).round() as u8
 }
 
-fn draw_fallback_mark(image: &mut RgbImage, ox: u32, oy: u32, size: u32, small: bool) {
-    let light = Rgb([246, 239, 222]);
-    let dark = Rgb([45, 39, 32]);
-    for y in oy..oy + size {
-        for x in ox..ox + size {
-            let lx = x - ox;
-            let ly = y - oy;
-            let edge = lx < 3 || ly < 3 || lx > size - 4 || ly > size - 4;
-            let eye = (ly > size / 2 - 4 && ly < size / 2 + 4)
-                && ((lx > size / 3 - 4 && lx < size / 3 + 4)
-                    || (lx > size * 2 / 3 - 4 && lx < size * 2 / 3 + 4));
-            let cursor = ly > size * 2 / 3 && ly < size * 2 / 3 + 4 && lx > size / 2 - 12 && lx < size / 2 + 12;
-            image.put_pixel(x, y, if edge || eye || cursor { light } else { dark });
-        }
-    }
-
-    if !small {
-        draw_separator(image, oy + size + 28, Rgb([72, 62, 52]));
-    }
-}
-
 fn save_bmp(path: &Path, image: &RgbImage) {
     image
         .save_with_format(path, ImageFormat::Bmp)
         .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
 }
 
-fn write_if_missing(path: &Path, bytes: &[u8]) {
-    if path.exists() {
-        return;
-    }
+fn write_bytes(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
 }
