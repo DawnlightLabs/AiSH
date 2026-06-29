@@ -13,7 +13,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-22.04]
+        include:
+          - os: windows-latest
+            artifact: aish-windows
+          - os: macos-latest
+            artifact: aish-macos
+          - os: ubuntu-22.04
+            artifact: aish-linux
 
     steps:
       - uses: actions/checkout@v4
@@ -49,7 +55,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: aish-${{ matrix.os }}
+          name: ${{ matrix.artifact }}
           path: |
             dist/provider-shell/**
             target/release/bundle/**
