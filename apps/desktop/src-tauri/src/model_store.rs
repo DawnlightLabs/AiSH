@@ -14,6 +14,13 @@ fn user_home() -> String {
 }
 
 fn models_dir() -> PathBuf {
+    if let Ok(model_path) = std::env::var("AISH_MODEL_PATH") {
+        let path = PathBuf::from(model_path);
+        if let Some(parent) = path.parent() {
+            return parent.to_path_buf();
+        }
+    }
+
     PathBuf::from(user_home()).join("Downloads").join("aish-model").join("models")
 }
 

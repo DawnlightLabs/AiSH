@@ -1,0 +1,67 @@
+services:
+  model:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: provider-runtime
+    command:
+      - --download-model
+    environment:
+      AISH_MODEL_PATH: /models/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf
+      HOME: /home/aish
+    volumes:
+      - provider-home:/home/aish
+      - aish-models:/models
+    restart: "no"
+
+  desktop:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: desktop-runtime
+    environment:
+      AISH_SHELL: /bin/bash
+      AISH_MODEL_PATH: /models/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf
+      AISH_LLAMA_CLI: /usr/local/bin/llama-cli
+      DISPLAY: :99
+      HOME: /home/aish
+    depends_on:
+      model:
+        condition: service_completed_successfully
+    ports:
+      - "6080:6080"
+    volumes:
+      - desktop-home:/home/aish
+      - .:/workspace:ro
+      - aish-models:/models
+    working_dir: /workspace
+    shm_size: "1gb"
+    restart: unless-stopped
+
+  provider:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: provider-runtime
+    environment:
+      AISH_MODEL_PATH: /models/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf
+      AISH_LLAMA_CLI: /usr/local/bin/llama-cli
+      HOME: /home/aish
+      SHELL: /bin/bash
+    depends_on:
+      model:
+        condition: service_completed_successfully
+    stdin_open: true
+    tty: true
+    volumes:
+      - provider-home:/home/aish
+      - .:/workspace:ro
+      - aish-models:/models
+    working_dir: /workspace
+    profiles:
+      - manual
+
+volumes:
+  desktop-home:
+  provider-home:
+  aish-models:

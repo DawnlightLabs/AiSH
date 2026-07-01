@@ -1,6 +1,8 @@
 mod setup;
 
 use aish_ai::{build_command_card_prompt, run_gguf_model, ModelProfile, ModelRunRequest};
+use aish_core::RiskLevel;
+use aish_safety::classify_risk;
 use serde::Deserialize;
 use std::env;
 use std::io::{self, Write};
@@ -64,7 +66,7 @@ fn main() {
 
         let input = input.strip_prefix("//").map(str::trim).unwrap_or(input);
         if looks_like_direct_command(input) {
-            run_shell_command(input);
+            approve_or_run(input, None, &mut state);
         } else {
             run_ai_request(input, &mut state);
         }
@@ -104,7 +106,8 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
         },
         "/approve" => {
             if let Some(pending) = state.pending.take() {
-                println!("approved: {}", pending.command);
+                println!("approved: {} ({})", pending.command, pending.risk);
+                println!("reason: {}", pending.reason);
                 run_shell_command(&pending.command);
             } else {
                 println!("no pending command");
@@ -157,24 +160,58 @@ fn run_ai_request(intent: &str, state: &mut ProviderState) {
         return;
     };
 
-    let risk = classify_risk(card.risk.as_deref().unwrap_or("medium"), command);
     let reason = card.reason.unwrap_or_else(|| "No reason supplied.".to_string());
 
     if state.show_trace {
         println!("working: request: {intent}");
         println!("working: shell: {command}");
-        println!("working: risk: {risk}");
         println!("working: reason: {reason}");
     }
 
-    if risk == "low" {
-        run_shell_command(command);
+    approve_or_run(command, Some((card.risk.as_deref().unwrap_or("medium"), &reason)), state);
+}
+
+fn approve_or_run(command: &str, model_assessment: Option<(&str, &str)>, state: &mut ProviderState) {
+    let local = classify_risk(command);
+    let local_reason = local.reason.clone();
+    let model_risk = model_assessment.map(|(risk, _)| risk).unwrap_or("low");
+    let risk = combined_risk(&local.risk, model_risk);
+    let needs_confirmation = local.needs_confirmation || risk != "low";
+    let reason = if local.needs_confirmation {
+        local_reason.clone()
     } else {
-        state.pending = Some(PendingCommand { command: command.to_string(), risk: risk.to_string(), reason: reason.clone() });
+        model_assessment
+            .map(|(_, reason)| reason.to_string())
+            .unwrap_or(local_reason.clone())
+    };
+
+    if state.show_trace {
+        println!("working: risk: {risk}");
+        println!("working: safety: {local_reason}");
+    }
+
+    if needs_confirmation {
+        state.pending = Some(PendingCommand {
+            command: command.to_string(),
+            risk: risk.to_string(),
+            reason: reason.clone(),
+        });
         println!("AiSH needs approval: {risk}");
         println!("reason: {reason}");
         println!("command: {command}");
         println!("type /approve or /cancel");
+    } else {
+        run_shell_command(command);
+    }
+}
+
+fn combined_risk(local: &RiskLevel, model_risk: &str) -> &'static str {
+    if matches!(local, RiskLevel::High) || model_risk.eq_ignore_ascii_case("high") {
+        "high"
+    } else if matches!(local, RiskLevel::Medium) || !model_risk.eq_ignore_ascii_case("low") {
+        "medium"
+    } else {
+        "low"
     }
 }
 
@@ -212,20 +249,8 @@ fn handle_cd(command: &str) -> bool {
 
 fn looks_like_direct_command(input: &str) -> bool {
     let first = input.split_whitespace().next().unwrap_or_default().to_lowercase();
-    let direct = ["cd", "dir", "ls", "pwd", "cat", "type", "echo", "clear", "cls", "git", "npm", "pnpm", "yarn", "bun", "node", "python", "pip", "cargo", "go", "docker", "kubectl", "where", "which", "grep", "find", "get-childitem", "get-location", "select-string"];
+    let direct = ["cd", "dir", "ls", "pwd", "cat", "type", "echo", "clear", "cls", "git", "npm", "pnpm", "yarn", "bun", "node", "python", "pip", "cargo", "go", "docker", "kubectl", "where", "which", "grep", "find", "rm", "rmdir", "del", "erase", "unlink", "shred", "mv", "cp", "mkdir", "touch", "remove-item", "clear-content", "move-item", "rename-item", "copy-item", "set-content", "add-content", "out-file", "get-childitem", "get-location", "select-string"];
     direct.contains(&first.as_str()) || input.contains('|') || input.contains("&&")
-}
-
-fn classify_risk(model_risk: &str, command: &str) -> &'static str {
-    let lower = format!(" {} ", command.to_lowercase());
-    let risky = ["remove".to_string() + "-item", " rm ".to_string(), " del ".to_string(), " erase ".to_string(), " rmdir ".to_string(), "git ".to_string() + "reset", "git ".to_string() + "clean", "git ".to_string() + "push", "npm ".to_string() + "publish", "deploy".to_string(), "format ".to_string(), "reg ".to_string() + "add", "reg ".to_string() + "delete", "chmod".to_string(), "chown".to_string(), "stop".to_string() + "-service", "shutdown".to_string(), "terraform ".to_string() + "apply", "kubectl ".to_string() + "delete"];
-    if risky.iter().any(|item| lower.contains(item)) { "high" } else if model_risk.eq_ignore_ascii_case("low") || is_read_only(command) { "low" } else { "medium" }
-}
-
-fn is_read_only(command: &str) -> bool {
-    let lower = command.trim().to_lowercase();
-    let prefixes = ["get-", "dir", "ls", "pwd", "cat", "type", "grep", "find", "where", "which", "git status", "git log", "npm list", "npm run", "node -v", "python --version"];
-    prefixes.iter().any(|prefix| lower.starts_with(prefix)) || lower.contains("select-object") || lower.contains("sort-object")
 }
 
 fn default_profile() -> ModelProfile {

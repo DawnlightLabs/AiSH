@@ -34,6 +34,13 @@ pub fn terminal_open(
 ) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|_| "terminal lock poisoned".to_string())?;
 
+    if action.as_deref() == Some("close") {
+        if let Some(mut session) = sessions.remove(&session_id) {
+            let _ = session.child.kill();
+        }
+        return Ok(());
+    }
+
     if let Some(session) = sessions.get_mut(&session_id) {
         if let Some(next_data) = data {
             session
@@ -61,13 +68,6 @@ pub fn terminal_open(
         return Ok(());
     }
 
-    if action.as_deref() == Some("close") {
-        if let Some(mut session) = sessions.remove(&session_id) {
-            let _ = session.child.kill();
-        }
-        return Ok(());
-    }
-
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -78,9 +78,17 @@ pub fn terminal_open(
         })
         .map_err(|error| format!("failed to open pty: {error}"))?;
 
-    let shell = std::env::var("AISH_SHELL").unwrap_or_else(|_| "powershell.exe".to_string());
+    let shell = std::env::var("AISH_SHELL").unwrap_or_else(|_| {
+        if cfg!(target_os = "windows") {
+            "powershell.exe".to_string()
+        } else {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+        }
+    });
     let mut command = CommandBuilder::new(shell);
-    command.arg("-NoLogo");
+    if cfg!(target_os = "windows") {
+        command.arg("-NoLogo");
+    }
 
     let child = pair
         .slave

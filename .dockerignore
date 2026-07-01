@@ -1,0 +1,13 @@
+.git
+.github
+node_modules
+**/node_modules
+target
+**/target
+dist
+**/dist
+src/core/__pycache__
+*.pyc
+models
+*.gguf
+

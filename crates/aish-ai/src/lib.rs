@@ -1,5 +1,6 @@
 use aish_core::Card;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -130,6 +131,15 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
     if request.profile.llama_cli_path.trim().is_empty() {
         return Err("llama-cli path is empty.".to_string());
     }
+    if !Path::new(&request.profile.model_path).is_file() {
+        return Err(format!(
+            "Model file is missing: {}. Run `docker compose run --rm model`.",
+            request.profile.model_path
+        ));
+    }
+    if !Path::new(&request.profile.llama_cli_path).is_file() {
+        return Err(format!("llama-cli is missing: {}", request.profile.llama_cli_path));
+    }
 
     let mut command = Command::new(&request.profile.llama_cli_path);
     command
@@ -165,11 +175,18 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
+    if !output.status.success() {
+        return Err(format!(
+            "Local model runtime failed: {}",
+            clean_runtime_text(&stderr)
+        ));
+    }
+
     Ok(ModelRunResult {
-        ok: output.status.success(),
+        ok: true,
         command_line,
         output: clean_model_output(&stdout),
-        error: if output.status.success() { String::new() } else { clean_runtime_text(&stderr) },
+        error: String::new(),
     })
 }
 

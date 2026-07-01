@@ -7,6 +7,16 @@ use std::path::{Path, PathBuf};
 const DEFAULT_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf?download=true";
 
 pub fn handle_setup_args() {
+    if env::args().any(|arg| arg == "--download-model") {
+        match download_model_if_missing(&default_model_path()) {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("model download failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if env::args().any(|arg| arg == "--setup") {
         run_setup_wizard(true);
     }
@@ -59,11 +69,11 @@ pub fn run_setup_wizard(exit_after: bool) {
 
 pub fn ensure_model(profile: &ModelProfile) {
     let path = PathBuf::from(&profile.model_path);
-    if path.exists() {
+    if is_valid_gguf(&path) {
         return;
     }
 
-    println!("model not found: {}", path.display());
+    println!("model missing or invalid: {}", path.display());
     if !prompt_yes_no("Download it now", true) {
         return;
     }
@@ -74,7 +84,7 @@ pub fn ensure_model(profile: &ModelProfile) {
 }
 
 fn download_model_if_missing(path: &Path) -> Result<(), String> {
-    if path.exists() {
+    if is_valid_gguf(path) {
         println!("model already exists: {}", path.display());
         return Ok(());
     }
@@ -87,10 +97,16 @@ fn download_model_if_missing(path: &Path) -> Result<(), String> {
     println!("downloading model to {}", path.display());
     println!("source: {url}");
 
-    let response = ureq::get(&url).call().map_err(|error| error.to_string())?;
+    let response = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(60))
+        .call()
+        .map_err(|error| error.to_string())?;
     let total = response.header("content-length").and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
     let mut reader = response.into_reader();
-    let mut file = File::create(path).map_err(|error| format!("failed to create {}: {error}", path.display()))?;
+    let partial_path = path.with_extension("gguf.part");
+    let _ = fs::remove_file(&partial_path);
+    let mut file = File::create(&partial_path)
+        .map_err(|error| format!("failed to create {}: {error}", partial_path.display()))?;
     let mut buf = [0u8; 1024 * 128];
     let mut written = 0u64;
 
@@ -106,9 +122,36 @@ fn download_model_if_missing(path: &Path) -> Result<(), String> {
         }
     }
 
+    file.flush().map_err(|error| error.to_string())?;
+    drop(file);
+    if total > 0 && written != total {
+        let _ = fs::remove_file(&partial_path);
+        return Err(format!("incomplete download: expected {total} bytes, received {written}"));
+    }
+    if !is_valid_gguf(&partial_path) {
+        let _ = fs::remove_file(&partial_path);
+        return Err("downloaded file is not a valid GGUF model".to_string());
+    }
+    fs::rename(&partial_path, path)
+        .map_err(|error| format!("failed to install {}: {error}", path.display()))?;
     if total > 0 { println!(); }
     println!("model ready: {}", path.display());
     Ok(())
+}
+
+fn is_valid_gguf(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if metadata.len() < 16 * 1024 * 1024 {
+        return false;
+    }
+
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut magic = [0_u8; 4];
+    file.read_exact(&mut magic).is_ok() && &magic == b"GGUF"
 }
 
 fn prompt_with_default(label: &str, default_value: String) -> String {

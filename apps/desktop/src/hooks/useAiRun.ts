@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { createAiCard } from '../lib/api';
+import { checkCommandRisk, createAiCard } from '../lib/api';
 
 export interface TerminalEntry {
   id: string;
@@ -141,16 +141,21 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
         return;
       }
 
+      const localDecision = await checkCommandRisk(command);
       const destructive = isDestructive(command);
-      const readOnly = isReadOnlyInspection(command);
-      const risk = destructive ? (modelRisk === 'high' ? 'high' : 'medium') : (readOnly ? 'low' : modelRisk);
+      const readOnly = isReadOnlyInspection(command) && !localDecision.needs_confirmation;
+      const localRisk = String(localDecision.risk ?? 'medium').toLowerCase();
+      const risk = localRisk === 'high' || modelRisk === 'high'
+        ? 'high'
+        : (localDecision.needs_confirmation || destructive || (!readOnly && modelRisk !== 'low') ? 'medium' : 'low');
+      const safetyReason = localDecision.needs_confirmation ? localDecision.reason : reason;
 
-      if (destructive || (risk !== 'low' && !readOnly)) {
-        patch(id, { status: 'approval', command, risk, reason, needsApproval: true, output: 'Approval required. Expand Working to approve or cancel.' });
+      if (localDecision.needs_confirmation || destructive || (risk !== 'low' && !readOnly)) {
+        patch(id, { status: 'approval', command, risk, reason: safetyReason, needsApproval: true, output: 'Approval required. Expand Working to approve or cancel.' });
         return;
       }
 
-      await sendToTerminal(id, command, risk, reason);
+      await sendToTerminal(id, command, risk, safetyReason);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
