@@ -130,7 +130,7 @@ pub fn plan_provider_input(request: ProviderPlanRequest) -> ProviderPlan {
         };
     }
 
-    match request.mode {
+    match request.mode.clone() {
         ProviderInputMode::Normal => plan_literal_command(&input, request.surface, ProviderInputMode::Normal),
         ProviderInputMode::AiRun => plan_ai_run(&input, request),
     }
