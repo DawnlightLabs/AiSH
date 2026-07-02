@@ -1,3 +1,4 @@
+use crate::logging;
 use aish_ai::ModelProfile;
 use std::env;
 use std::fs::{self, File};
@@ -27,6 +28,20 @@ pub fn run_setup_wizard(exit_after: bool) {
     let install_dir = PathBuf::from(install_dir);
     let install_kind = prompt_with_default("Install type: 1 provider shell only, 2 desktop app + provider shell", "2".to_string());
     let download_model = prompt_yes_no("Download the Qwen2.5 Coder model now", true);
+    let command_log_policy = prompt_log_policy();
+    let crash_log_sharing_opt_in = prompt_yes_no("Allow crash-log sharing prompts for Dawnlight Labs", false);
+
+    let log_settings = logging::LogSettings {
+        command_log_policy,
+        crash_log_sharing_opt_in,
+    };
+    if let Err(error) = logging::write_settings(&log_settings) {
+        eprintln!("setup warning: could not save log settings: {error}");
+    } else {
+        println!("saved log settings: {}", logging::settings_path().display());
+        println!("command logs path: {}", logging::command_log_path().display());
+        println!("logs stay local in this build; upload is not implemented.");
+    }
 
     if let Err(error) = fs::create_dir_all(install_dir.join("bin")) {
         eprintln!("setup failed: could not create install directory: {error}");
@@ -173,6 +188,19 @@ fn prompt_yes_no(label: &str, default_yes: bool) -> bool {
         "y" | "yes" => true,
         "n" | "no" => false,
         _ => default_yes,
+    }
+}
+
+fn prompt_log_policy() -> logging::CommandLogPolicy {
+    println!("Local command logs are stored on this machine only.");
+    println!("  1. Off");
+    println!("  2. Failed commands only");
+    println!("  3. All AiSH commands");
+    let choice = prompt_with_default("Local command log policy", "2".to_string());
+    match choice.trim().to_lowercase().as_str() {
+        "1" | "off" | "none" => logging::CommandLogPolicy::Off,
+        "3" | "all" => logging::CommandLogPolicy::All,
+        _ => logging::CommandLogPolicy::FailedOnly,
     }
 }
 
