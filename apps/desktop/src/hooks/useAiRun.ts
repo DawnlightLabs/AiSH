@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { checkCommandRisk, createAiCard, recordCommandLog } from '../lib/api';
+import { providerPlan, recordCommandLog, type ProviderPlan } from '../lib/api';
 
 export interface TerminalEntry {
   id: string;
@@ -13,83 +13,6 @@ export interface TerminalEntry {
   needsApproval?: boolean;
   modelOutput?: string;
   runtime?: string;
-}
-
-function cleanJson(text: string) {
-  return text.trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/g, '').trim();
-}
-
-function isDestructive(command: string) {
-  const value = command.toLowerCase();
-  const patterns = [
-    'remove' + '-item', ' rm ', 'del ', 'erase ', 'rmdir ', 'remove' + '-', 'clear' + '-content',
-    'set' + '-content', 'add' + '-content', 'out' + '-file', 'move' + '-item', 'rename' + '-item', 'copy' + '-item',
-    'git ' + 'reset', 'git ' + 'clean', 'git ' + 'push', 'npm ' + 'publish', 'deploy', 'format ',
-    'reg ' + 'add', 'reg ' + 'delete', 'set' + '-acl', 'icacls', 'takeown', 'chmod', 'chown',
-    'stop' + '-process', 'kill ', 'shutdown', 'restart' + '-computer', 'stop' + '-service', 'set' + '-service',
-    'npm ' + 'install', 'pnpm ' + 'install', 'yarn ' + 'install', 'pip ' + 'install', 'cargo ' + 'install',
-    'docker system prune', 'kubectl ' + 'delete', 'terraform ' + 'apply', 'aws ', 'az ', 'gcloud '
-  ];
-  const padded = ` ${value} `;
-  return patterns.some((pattern) => padded.includes(pattern));
-}
-
-function isReadOnlyInspection(command: string) {
-  const value = command.trim().toLowerCase();
-  if (isDestructive(command)) return false;
-  const readOnly = [
-    'get-', 'dir', 'ls', 'pwd', 'where.exe', 'where ', 'select-string', 'type ', 'cat ',
-    'findstr', 'git status', 'git log', 'git diff', 'npm run', 'npm list', 'node -v',
-    'npm -v', 'python --version', 'pip --version', 'ipconfig', 'netstat', 'tasklist'
-  ];
-  return readOnly.some((prefix) => value.startsWith(prefix)) || value.includes('| select-object') || value.includes('| sort-object');
-}
-
-function unquote(value: string) {
-  return value.trim().replace(/^['"]/, '').replace(/['"]$/, '').trim();
-}
-
-function intentWords(intent: string) {
-  return new Set(intent.toLowerCase().match(/[a-z0-9_.-]+/g) ?? []);
-}
-
-function removeStaleFilter(command: string, intent: string) {
-  const words = intentWords(intent);
-  const listing = /\b(list|show|contents?|everything|all)\b/i.test(intent);
-  return command.replace(/\s+-Filter\s+((?:"[^"]+")|(?:'[^']+')|(?:[^\s|]+))/ig, (match, raw) => {
-    const filter = unquote(String(raw)).toLowerCase();
-    const core = filter.replace(/^\*+/, '').replace(/\*+$/, '');
-    if (!listing) return match;
-    if (filter === '*' || filter === '*.*') return match;
-    return words.has(filter) || words.has(core) ? match : '';
-  });
-}
-
-function fixPlaceholderUserPath(command: string) {
-  return command
-    .replace(/C:\\Users\\YourUsername/ig, '$env:USERPROFILE')
-    .replace(/C:\/Users\/YourUsername/ig, '$env:USERPROFILE')
-    .replace(/C:\\Users\\<[^>]+>/ig, '$env:USERPROFILE')
-    .replace(/C:\/Users\/<[^>]+>/ig, '$env:USERPROFILE');
-}
-
-function normalizeCommand(command: string, intent: string) {
-  let next = command.trim();
-  next = fixPlaceholderUserPath(next);
-  next = removeStaleFilter(next, intent);
-
-  const listing = /\b(list|show|contents?|everything|all)\b/i.test(intent);
-  const exactPath = /\b(where|location|exact|path)\b/i.test(intent);
-
-  if (listing && !/\bfiles?\b/i.test(intent)) {
-    next = next.replace(/\s+-File\b/ig, '');
-  }
-
-  if (listing && !exactPath) {
-    next = next.replace(/\s*\|\s*Select-Object\s+-ExpandProperty\s+FullName\b/ig, '');
-  }
-
-  return next.replace(/\s{2,}/g, ' ').trim();
 }
 
 function logCommand(entry: {
@@ -127,6 +50,16 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
     logCommand({ intent, command, status: 'sent_to_terminal', risk, reason });
   }
 
+  function patchPlanTrace(id: string, plan: ProviderPlan) {
+    patch(id, {
+      command: plan.command ?? undefined,
+      risk: plan.risk,
+      reason: plan.reason,
+      modelOutput: plan.model_output ?? undefined,
+      runtime: plan.runtime ?? undefined,
+    });
+  }
+
   async function runIntent(intent: string) {
     const text = intent.trim();
     if (!text || isRunning) return;
@@ -137,46 +70,43 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
     setEntries((items) => [...items, { id, intent: text, output: '', error: '', status: 'running' }]);
 
     try {
-      const raw = await createAiCard(profileId, text);
-      setResult(raw);
-      const body = cleanJson(String(raw?.output ?? raw?.error ?? ''));
-      patch(id, { modelOutput: body, runtime: String(raw?.command_line ?? '') });
-      let card: any = null;
-      try { card = JSON.parse(body); } catch { card = null; }
-      if (!card) {
-        const message = body || 'No valid card returned.';
+      const plan = await providerPlan(profileId, text, 'ai_run');
+      setResult(plan);
+      patchPlanTrace(id, plan);
+
+      if (plan.action === 'noop') {
+        patch(id, { status: 'blocked', output: plan.reason });
+        return;
+      }
+
+      if (plan.action === 'error') {
+        const message = plan.error || plan.reason || 'Provider planning failed.';
         patch(id, { status: 'error', error: message });
-        logCommand({ intent: text, status: 'error', error: message });
+        logCommand({ intent: text, command: plan.command ?? undefined, status: 'error', risk: plan.risk, reason: plan.reason, error: message });
         return;
       }
 
-      const command = normalizeCommand(String(card['com' + 'mand'] ?? ''), text);
-      const modelRisk = String(card.risk ?? 'medium').toLowerCase();
-      const reason = String(card.reason ?? '');
-
-      if (!command) {
-        const message = String(card.fallback_message ?? (reason || 'No action available.'));
-        patch(id, { status: 'blocked', output: message, reason });
-        logCommand({ intent: text, status: 'blocked', reason, error: message });
+      if (plan.action === 'fallback') {
+        const message = plan.fallback_message || plan.reason || 'No action available.';
+        patch(id, { status: 'blocked', output: message, reason: plan.reason });
+        logCommand({ intent: text, status: 'blocked', risk: plan.risk, reason: plan.reason, error: message });
         return;
       }
 
-      const localDecision = await checkCommandRisk(command);
-      const destructive = isDestructive(command);
-      const readOnly = isReadOnlyInspection(command) && !localDecision.needs_confirmation;
-      const localRisk = String(localDecision.risk ?? 'medium').toLowerCase();
-      const risk = localRisk === 'high' || modelRisk === 'high'
-        ? 'high'
-        : (localDecision.needs_confirmation || destructive || (!readOnly && modelRisk !== 'low') ? 'medium' : 'low');
-      const safetyReason = localDecision.needs_confirmation ? localDecision.reason : reason;
-
-      if (localDecision.needs_confirmation || destructive || (risk !== 'low' && !readOnly)) {
-        patch(id, { status: 'approval', command, risk, reason: safetyReason, needsApproval: true, output: 'Approval required. Expand Working to approve or cancel.' });
-        logCommand({ intent: text, command, status: 'approval_required', risk, reason: safetyReason });
+      if (!plan.command) {
+        const message = 'Provider returned no command.';
+        patch(id, { status: 'error', error: message });
+        logCommand({ intent: text, status: 'error', risk: plan.risk, reason: plan.reason, error: message });
         return;
       }
 
-      await sendToTerminal(id, command, risk, safetyReason, text);
+      if (plan.action === 'approval_required' || plan.needs_approval) {
+        patch(id, { status: 'approval', command: plan.command, risk: plan.risk, reason: plan.reason, needsApproval: true, output: 'Approval required. Expand Working to approve or cancel.' });
+        logCommand({ intent: text, command: plan.command, status: 'approval_required', risk: plan.risk, reason: plan.reason });
+        return;
+      }
+
+      await sendToTerminal(id, plan.command, plan.risk, plan.reason, text);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
