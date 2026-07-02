@@ -28,15 +28,19 @@ pub fn classify_risk(command: &str) -> RiskDecision {
 
     if long_search {
         return RiskDecision {
-            risk: RiskLevel::Medium,
-            needs_confirmation: true,
-            reason: "Broad recursive drive searches can take a long time in the current prototype."
-                .to_string(),
+            risk: RiskLevel::Low,
+            needs_confirmation: false,
+            reason: "Read-only recursive drive search.".to_string(),
         };
     }
 
     let destructive = [
         " remove-item ",
+        " del ",
+        " erase ",
+        " rmdir ",
+        " rm ",
+        " rm -rf ",
         " clear-content ",
         " -delete ",
         "git reset --hard",
@@ -139,6 +143,7 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         "where.exe ",
         "get-childitem",
         "get-location",
+        "set-location",
         "select-string",
         "git status",
         "git log",
@@ -190,6 +195,7 @@ mod tests {
             "Remove-Item temp.txt",
             "git clean -fd",
             "find . -name '*.tmp' -delete",
+            "del temp.txt",
         ] {
             assert_risk(command, RiskLevel::High, true);
         }
@@ -214,6 +220,8 @@ mod tests {
             "ls -la",
             "git status --short",
             "git log --format=oneline",
+            "Set-Location C:\\Users",
+            "Get-ChildItem -Path D:\\ -Recurse -Filter foo",
         ] {
             assert_risk(command, RiskLevel::Low, false);
         }
