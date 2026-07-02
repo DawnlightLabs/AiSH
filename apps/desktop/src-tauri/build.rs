@@ -11,6 +11,7 @@ fn main() {
     let logo = load_app_icon(&base);
 
     ensure_icons(&base, &logo);
+    ensure_provider_sidecar_for_tauri_check(&base);
 
     let art_dir = base.join("installer");
     fs::create_dir_all(&art_dir).expect("failed to create artwork directory");
@@ -18,6 +19,51 @@ fn main() {
     create_dialog_bmp(&art_dir.join("wix-dialog.bmp"), &logo);
 
     tauri_build::build();
+}
+
+fn ensure_provider_sidecar_for_tauri_check(base: &Path) {
+    let Some(target) = std::env::var("TARGET").ok() else {
+        return;
+    };
+
+    let ext = if target.contains("windows") { ".exe" } else { "" };
+    let sidecar_dir = base.join("binaries");
+    let sidecar = sidecar_dir.join(format!("aish-provider-shell-{target}{ext}"));
+    if sidecar.exists() {
+        return;
+    }
+
+    let repo_root = base
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .unwrap_or(base);
+    let release_provider = repo_root
+        .join("target")
+        .join("release")
+        .join(if target.contains("windows") { "aish.exe" } else { "aish" });
+
+    fs::create_dir_all(&sidecar_dir).expect("failed to create sidecar directory");
+    if release_provider.exists() {
+        fs::copy(&release_provider, &sidecar)
+            .unwrap_or_else(|error| panic!("failed to copy provider sidecar: {error}"));
+    } else {
+        fs::write(
+            &sidecar,
+            b"AiSH provider sidecar placeholder for cargo check. Run npm run provider:sidecar before packaging.\n",
+        )
+        .unwrap_or_else(|error| panic!("failed to write sidecar placeholder: {error}"));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&sidecar)
+            .expect("sidecar metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&sidecar, perms).expect("sidecar executable permissions");
+    }
 }
 
 fn load_app_icon(base: &Path) -> RgbaImage {
