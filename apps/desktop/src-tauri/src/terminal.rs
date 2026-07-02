@@ -32,7 +32,10 @@ pub fn terminal_open(
     data: Option<String>,
     action: Option<String>,
 ) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|_| "terminal lock poisoned".to_string())?;
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "terminal lock poisoned".to_string())?;
 
     if action.as_deref() == Some("close") {
         if let Some(mut session) = sessions.remove(&session_id) {
@@ -144,7 +147,10 @@ pub fn terminal_write(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|_| "terminal lock poisoned".to_string())?;
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "terminal lock poisoned".to_string())?;
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| format!("terminal session not found: {session_id}"))?;
@@ -165,7 +171,10 @@ pub fn terminal_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|_| "terminal lock poisoned".to_string())?;
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "terminal lock poisoned".to_string())?;
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| format!("terminal session not found: {session_id}"))?;
@@ -182,7 +191,10 @@ pub fn terminal_resize(
 
 #[tauri::command]
 pub fn terminal_close(state: State<'_, TerminalState>, session_id: String) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|_| "terminal lock poisoned".to_string())?;
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "terminal lock poisoned".to_string())?;
     if let Some(mut session) = sessions.remove(&session_id) {
         let _ = session.child.kill();
     }

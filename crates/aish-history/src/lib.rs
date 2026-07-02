@@ -19,7 +19,11 @@ pub struct CommandEvent {
 }
 
 impl CommandEvent {
-    pub fn new(shell: impl Into<String>, os: impl Into<String>, command: impl Into<String>) -> Self {
+    pub fn new(
+        shell: impl Into<String>,
+        os: impl Into<String>,
+        command: impl Into<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             timestamp: Utc::now(),

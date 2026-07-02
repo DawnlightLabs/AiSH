@@ -33,7 +33,11 @@ pub fn run_shell_command(command: String, allow_medium_risk: bool) -> Result<Com
     Ok(CommandTrace {
         intent: command.clone(),
         card_type: "command".to_string(),
-        risk: if risk.needs_confirmation { RiskLevel::Medium } else { RiskLevel::Low },
+        risk: if risk.needs_confirmation {
+            RiskLevel::Medium
+        } else {
+            RiskLevel::Low
+        },
         context_used: vec!["shell".to_string(), "cwd".to_string()],
         commands: vec![command],
         exit_code,

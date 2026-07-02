@@ -3,12 +3,32 @@ use aish_provider::CompletionItem;
 
 pub fn demo_suggestions(prefix: &str) -> Vec<CompletionItem> {
     let all = vec![
-        item("npm run dev", "Start the npm dev script", "package_scripts", 0.92),
-        item("npm run build", "Build the npm project", "package_scripts", 0.72),
+        item(
+            "npm run dev",
+            "Start the npm dev script",
+            "package_scripts",
+            0.92,
+        ),
+        item(
+            "npm run build",
+            "Build the npm project",
+            "package_scripts",
+            0.72,
+        ),
         item("npm test", "Run npm tests", "package_scripts", 0.68),
         item("git status --short", "Show concise Git status", "git", 0.84),
-        item("git branch --show-current", "Show current Git branch", "git", 0.70),
-        item("docker compose ps", "List Compose services", "docker_compose", 0.65),
+        item(
+            "git branch --show-current",
+            "Show current Git branch",
+            "git",
+            0.70,
+        ),
+        item(
+            "docker compose ps",
+            "List Compose services",
+            "docker_compose",
+            0.65,
+        ),
         item("python -m pytest", "Run Python tests", "python", 0.62),
     ];
 

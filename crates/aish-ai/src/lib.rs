@@ -72,7 +72,10 @@ impl AiRuntime for NullAiRuntime {
         AiResponse {
             raw: String::new(),
             card: None,
-            validation_error: Some(format!("No local AI runtime configured for: {}", request.intent)),
+            validation_error: Some(format!(
+                "No local AI runtime configured for: {}",
+                request.intent
+            )),
         }
     }
 }
@@ -138,7 +141,10 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
         ));
     }
     if !Path::new(&request.profile.llama_cli_path).is_file() {
-        return Err(format!("llama-cli is missing: {}", request.profile.llama_cli_path));
+        return Err(format!(
+            "llama-cli is missing: {}",
+            request.profile.llama_cli_path
+        ));
     }
 
     let mut command = Command::new(&request.profile.llama_cli_path);
@@ -212,17 +218,32 @@ fn clean_runtime_text(raw: &str) -> String {
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.contains("llama.cpp") || trimmed.starts_with("build") || trimmed.starts_with("model") || trimmed.starts_with("modalities") {
+        if trimmed.contains("llama.cpp")
+            || trimmed.starts_with("build")
+            || trimmed.starts_with("model")
+            || trimmed.starts_with("modalities")
+        {
             continue;
         }
-        if trimmed == "available commands:" || trimmed.starts_with("/exit") || trimmed.starts_with("/regen") || trimmed.starts_with("/clear") || trimmed.starts_with("/read") || trimmed.starts_with("/glob") {
+        if trimmed == "available commands:"
+            || trimmed.starts_with("/exit")
+            || trimmed.starts_with("/regen")
+            || trimmed.starts_with("/clear")
+            || trimmed.starts_with("/read")
+            || trimmed.starts_with("/glob")
+        {
             continue;
         }
         if trimmed.starts_with('>') {
             skipping_prompt = true;
             continue;
         }
-        if skipping_prompt && (trimmed.starts_with("Schema") || trimmed.starts_with("Rules:") || trimmed.starts_with("User request:") || trimmed.starts_with("Example")) {
+        if skipping_prompt
+            && (trimmed.starts_with("Schema")
+                || trimmed.starts_with("Rules:")
+                || trimmed.starts_with("User request:")
+                || trimmed.starts_with("Example"))
+        {
             continue;
         }
         if trimmed.starts_with("[") && trimmed.contains("thinking") {

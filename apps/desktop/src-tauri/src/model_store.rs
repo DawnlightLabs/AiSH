@@ -21,12 +21,18 @@ fn models_dir() -> PathBuf {
         }
     }
 
-    PathBuf::from(user_home()).join("Downloads").join("aish-model").join("models")
+    PathBuf::from(user_home())
+        .join("Downloads")
+        .join("aish-model")
+        .join("models")
 }
 
 fn llama_cli_path() -> String {
     if cfg!(target_os = "windows") {
-        format!("{}/Downloads/llama.cpp/build/bin/Release/llama-cli.exe", user_home())
+        format!(
+            "{}/Downloads/llama.cpp/build/bin/Release/llama-cli.exe",
+            user_home()
+        )
     } else {
         std::env::var("AISH_LLAMA_CLI").unwrap_or_else(|_| "llama-cli".to_string())
     }
@@ -42,7 +48,13 @@ fn candidate_paths() -> Vec<PathBuf> {
 
     let manifest = manifest_dir();
     paths.push(manifest.join("..").join("model_profiles.json"));
-    paths.push(manifest.join("..").join("..").join("..").join("model_profiles.json"));
+    paths.push(
+        manifest
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("model_profiles.json"),
+    );
 
     paths
 }
@@ -69,7 +81,11 @@ fn read_profiles(path: &Path) -> Result<Vec<ModelProfile>, String> {
 fn active_profiles(profiles: Vec<ModelProfile>) -> Vec<ModelProfile> {
     profiles
         .into_iter()
-        .filter(|profile| is_qwen25_coder(&profile.id) || is_qwen25_coder(&profile.label) || is_qwen25_coder(&profile.model_path))
+        .filter(|profile| {
+            is_qwen25_coder(&profile.id)
+                || is_qwen25_coder(&profile.label)
+                || is_qwen25_coder(&profile.model_path)
+        })
         .collect()
 }
 
@@ -100,7 +116,8 @@ pub fn save_profiles(profiles: Vec<ModelProfile>) -> Result<Vec<ModelProfile>, S
     let active = active_profiles(profiles);
     let path = store_path();
     let text = serde_json::to_string_pretty(&active).map_err(|error| error.to_string())?;
-    fs::write(&path, text).map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
+    fs::write(&path, text)
+        .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
     Ok(active)
 }
 
@@ -121,8 +138,16 @@ fn discover_gguf_profiles() -> Vec<ModelProfile> {
     let mut profiles: Vec<ModelProfile> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("gguf")))
-        .filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(is_qwen25_coder))
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+        })
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_qwen25_coder)
+        })
         .map(profile_from_path)
         .collect();
 
@@ -131,8 +156,14 @@ fn discover_gguf_profiles() -> Vec<ModelProfile> {
 }
 
 fn profile_from_path(path: PathBuf) -> ModelProfile {
-    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("model.gguf");
-    let stem = path.file_stem().and_then(|name| name.to_str()).unwrap_or(file_name);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("model.gguf");
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(file_name);
 
     ModelProfile {
         id: sanitize_id(stem),
@@ -150,12 +181,22 @@ fn expected_profiles() -> Vec<ModelProfile> {
     let root = models_dir().display().to_string().replace('\\', "/");
     let llama = llama_cli_path();
 
-    vec![
-        profile("qwen2-5-coder-1-5b-instruct-q4-k-m", "Qwen2.5 Coder 1.5B Instruct Q4_K_M", "qwen2.5-coder", &format!("{root}/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"), &llama),
-    ]
+    vec![profile(
+        "qwen2-5-coder-1-5b-instruct-q4-k-m",
+        "Qwen2.5 Coder 1.5B Instruct Q4_K_M",
+        "qwen2.5-coder",
+        &format!("{root}/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"),
+        &llama,
+    )]
 }
 
-fn profile(id: &str, label: &str, family: &str, model_path: &str, llama_cli_path: &str) -> ModelProfile {
+fn profile(
+    id: &str,
+    label: &str,
+    family: &str,
+    model_path: &str,
+    llama_cli_path: &str,
+) -> ModelProfile {
     ModelProfile {
         id: id.to_string(),
         label: label.to_string(),
@@ -190,7 +231,9 @@ fn label_from_stem(stem: &str) -> String {
 
 fn is_qwen25_coder(value: &str) -> bool {
     let lower = value.to_lowercase();
-    (lower.contains("qwen2.5-coder") || lower.contains("qwen2-5-coder") || lower.contains("qwen25-coder"))
+    (lower.contains("qwen2.5-coder")
+        || lower.contains("qwen2-5-coder")
+        || lower.contains("qwen25-coder"))
         && (lower.contains("1.5b") || lower.contains("1-5b") || lower.contains("15b"))
 }
 

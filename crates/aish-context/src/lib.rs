@@ -38,7 +38,7 @@ pub fn inspect_project(cwd: impl AsRef<Path>) -> ProjectContext {
         "requirements.txt",
         "go.mod",
         "pom.xml",
-        "build.gradle"
+        "build.gradle",
     ];
 
     let detected_files: Vec<String> = candidates
@@ -53,7 +53,10 @@ pub fn inspect_project(cwd: impl AsRef<Path>) -> ProjectContext {
         Some("yarn".to_string())
     } else if detected_files.iter().any(|file| file == "bun.lockb") {
         Some("bun".to_string())
-    } else if detected_files.iter().any(|file| file == "package-lock.json" || file == "package.json") {
+    } else if detected_files
+        .iter()
+        .any(|file| file == "package-lock.json" || file == "package.json")
+    {
         Some("npm".to_string())
     } else {
         None
@@ -63,9 +66,15 @@ pub fn inspect_project(cwd: impl AsRef<Path>) -> ProjectContext {
         Some("node".to_string())
     } else if detected_files.iter().any(|file| file == "Cargo.toml") {
         Some("rust".to_string())
-    } else if detected_files.iter().any(|file| file == "pyproject.toml" || file == "requirements.txt") {
+    } else if detected_files
+        .iter()
+        .any(|file| file == "pyproject.toml" || file == "requirements.txt")
+    {
         Some("python".to_string())
-    } else if detected_files.iter().any(|file| file == "docker-compose.yml" || file == "docker-compose.yaml") {
+    } else if detected_files
+        .iter()
+        .any(|file| file == "docker-compose.yml" || file == "docker-compose.yaml")
+    {
         Some("docker_compose".to_string())
     } else {
         None

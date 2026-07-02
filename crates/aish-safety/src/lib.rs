@@ -21,13 +21,17 @@ pub fn classify_risk(command: &str) -> RiskDecision {
 
     let long_search = normalized.contains("get-childitem")
         && normalized.contains("-recurse")
-        && (normalized.contains("-path d:") || normalized.contains("-path d:\\") || normalized.contains("-path c:") || normalized.contains("-path c:\\"));
+        && (normalized.contains("-path d:")
+            || normalized.contains("-path d:\\")
+            || normalized.contains("-path c:")
+            || normalized.contains("-path c:\\"));
 
     if long_search {
         return RiskDecision {
             risk: RiskLevel::Medium,
             needs_confirmation: true,
-            reason: "Broad recursive drive searches can take a long time in the current prototype.".to_string(),
+            reason: "Broad recursive drive searches can take a long time in the current prototype."
+                .to_string(),
         };
     }
 
@@ -50,7 +54,10 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         " restart-computer",
     ];
 
-    if destructive.iter().any(|pattern| normalized.contains(pattern)) {
+    if destructive
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+    {
         return RiskDecision {
             risk: RiskLevel::High,
             needs_confirmation: true,
@@ -149,7 +156,10 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         "cargo --version",
     ];
 
-    if read_only.iter().any(|prefix| trimmed == *prefix || trimmed.starts_with(prefix)) {
+    if read_only
+        .iter()
+        .any(|prefix| trimmed == *prefix || trimmed.starts_with(prefix))
+    {
         RiskDecision {
             risk: RiskLevel::Low,
             needs_confirmation: false,
@@ -199,7 +209,12 @@ mod tests {
 
     #[test]
     fn known_inspection_commands_are_low_risk() {
-        for command in ["pwd", "ls -la", "git status --short", "git log --format=oneline"] {
+        for command in [
+            "pwd",
+            "ls -la",
+            "git status --short",
+            "git log --format=oneline",
+        ] {
             assert_risk(command, RiskLevel::Low, false);
         }
     }

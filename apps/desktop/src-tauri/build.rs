@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 fn main() {
     println!("cargo:rerun-if-changed=app-icon.png");
 
-    let base = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
+    let base =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
     let logo = load_app_icon(&base);
 
     ensure_icons(&base, &logo);
@@ -184,5 +185,6 @@ fn save_bmp(path: &Path, image: &RgbImage) {
 }
 
 fn write_bytes(path: &Path, bytes: &[u8]) {
-    fs::write(path, bytes).unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
+    fs::write(path, bytes)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
 }

@@ -24,12 +24,19 @@ pub fn handle_setup_args() {
 }
 
 pub fn run_setup_wizard(exit_after: bool) {
-    let install_dir = prompt_with_default("Install location", default_install_dir().display().to_string());
+    let install_dir = prompt_with_default(
+        "Install location",
+        default_install_dir().display().to_string(),
+    );
     let install_dir = PathBuf::from(install_dir);
-    let install_kind = prompt_with_default("Install type: 1 provider shell only, 2 desktop app + provider shell", "2".to_string());
+    let install_kind = prompt_with_default(
+        "Install type: 1 provider shell only, 2 desktop app + provider shell",
+        "2".to_string(),
+    );
     let download_model = prompt_yes_no("Download the Qwen2.5 Coder model now", true);
     let command_log_policy = prompt_log_policy();
-    let crash_log_sharing_opt_in = prompt_yes_no("Allow crash-log sharing prompts for Dawnlight Labs", false);
+    let crash_log_sharing_opt_in =
+        prompt_yes_no("Allow crash-log sharing prompts for Dawnlight Labs", false);
 
     let log_settings = logging::LogSettings {
         command_log_policy,
@@ -39,19 +46,28 @@ pub fn run_setup_wizard(exit_after: bool) {
         eprintln!("setup warning: could not save log settings: {error}");
     } else {
         println!("saved log settings: {}", logging::settings_path().display());
-        println!("command logs path: {}", logging::command_log_path().display());
+        println!(
+            "command logs path: {}",
+            logging::command_log_path().display()
+        );
         println!("logs stay local in this build; upload is not implemented.");
     }
 
     if let Err(error) = fs::create_dir_all(install_dir.join("bin")) {
         eprintln!("setup failed: could not create install directory: {error}");
-        if exit_after { std::process::exit(1); }
+        if exit_after {
+            std::process::exit(1);
+        }
         return;
     }
 
     match env::current_exe() {
         Ok(current) => {
-            let name = if cfg!(target_os = "windows") { "aish.exe" } else { "aish" };
+            let name = if cfg!(target_os = "windows") {
+                "aish.exe"
+            } else {
+                "aish"
+            };
             let target = install_dir.join("bin").join(name);
             if let Err(error) = fs::copy(&current, &target) {
                 eprintln!("setup warning: could not copy provider shell: {error}");
@@ -79,7 +95,9 @@ pub fn run_setup_wizard(exit_after: bool) {
     }
 
     println!("setup complete");
-    if exit_after { std::process::exit(0); }
+    if exit_after {
+        std::process::exit(0);
+    }
 }
 
 pub fn ensure_model(profile: &ModelProfile) {
@@ -106,7 +124,8 @@ fn download_model_if_missing(path: &Path) -> Result<(), String> {
 
     let url = env::var("AISH_MODEL_URL").unwrap_or_else(|_| DEFAULT_MODEL_URL.to_string());
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
     }
 
     println!("downloading model to {}", path.display());
@@ -116,7 +135,10 @@ fn download_model_if_missing(path: &Path) -> Result<(), String> {
         .timeout(std::time::Duration::from_secs(60))
         .call()
         .map_err(|error| error.to_string())?;
-    let total = response.header("content-length").and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+    let total = response
+        .header("content-length")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
     let mut reader = response.into_reader();
     let partial_path = path.with_extension("gguf.part");
     let _ = fs::remove_file(&partial_path);
@@ -127,8 +149,11 @@ fn download_model_if_missing(path: &Path) -> Result<(), String> {
 
     loop {
         let n = reader.read(&mut buf).map_err(|error| error.to_string())?;
-        if n == 0 { break; }
-        file.write_all(&buf[..n]).map_err(|error| error.to_string())?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .map_err(|error| error.to_string())?;
         written += n as u64;
         if total > 0 {
             let pct = (written as f64 / total as f64) * 100.0;
@@ -141,7 +166,9 @@ fn download_model_if_missing(path: &Path) -> Result<(), String> {
     drop(file);
     if total > 0 && written != total {
         let _ = fs::remove_file(&partial_path);
-        return Err(format!("incomplete download: expected {total} bytes, received {written}"));
+        return Err(format!(
+            "incomplete download: expected {total} bytes, received {written}"
+        ));
     }
     if !is_valid_gguf(&partial_path) {
         let _ = fs::remove_file(&partial_path);
@@ -149,7 +176,9 @@ fn download_model_if_missing(path: &Path) -> Result<(), String> {
     }
     fs::rename(&partial_path, path)
         .map_err(|error| format!("failed to install {}: {error}", path.display()))?;
-    if total > 0 { println!(); }
+    if total > 0 {
+        println!();
+    }
     println!("model ready: {}", path.display());
     Ok(())
 }
@@ -173,9 +202,15 @@ fn prompt_with_default(label: &str, default_value: String) -> String {
     print!("{label} [{default_value}]: ");
     let _ = io::stdout().flush();
     let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_err() { return default_value; }
+    if io::stdin().read_line(&mut input).is_err() {
+        return default_value;
+    }
     let trimmed = input.trim();
-    if trimmed.is_empty() { default_value } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        default_value
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn prompt_yes_no(label: &str, default_yes: bool) -> bool {
@@ -183,7 +218,9 @@ fn prompt_yes_no(label: &str, default_yes: bool) -> bool {
     print!("{label} [{suffix}]: ");
     let _ = io::stdout().flush();
     let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_err() { return default_yes; }
+    if io::stdin().read_line(&mut input).is_err() {
+        return default_yes;
+    }
     match input.trim().to_lowercase().as_str() {
         "y" | "yes" => true,
         "n" | "no" => false,
@@ -206,7 +243,10 @@ fn prompt_log_policy() -> logging::CommandLogPolicy {
 
 fn default_install_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
-        env::var("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|_| home_dir()).join("AiSH")
+        env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home_dir())
+            .join("AiSH")
     } else if cfg!(target_os = "macos") {
         home_dir().join("Applications").join("AiSH")
     } else {
@@ -215,10 +255,19 @@ fn default_install_dir() -> PathBuf {
 }
 
 fn default_model_path() -> PathBuf {
-    if let Ok(path) = env::var("AISH_MODEL_PATH") { return PathBuf::from(path); }
-    home_dir().join("Downloads").join("aish-model").join("models").join("Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf")
+    if let Ok(path) = env::var("AISH_MODEL_PATH") {
+        return PathBuf::from(path);
+    }
+    home_dir()
+        .join("Downloads")
+        .join("aish-model")
+        .join("models")
+        .join("Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf")
 }
 
 fn home_dir() -> PathBuf {
-    env::var("USERPROFILE").or_else(|_| env::var("HOME")).map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+    env::var("USERPROFILE")
+        .or_else(|_| env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
