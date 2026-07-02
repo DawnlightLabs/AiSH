@@ -40,13 +40,13 @@ export function useAiRun(profileId: string, contextMode: ProviderContextMode = '
   async function sendToTerminal(id: string, command: string, risk: string, reason: string, intent?: string) {
     if (!options.onLine) {
       const message = 'Terminal session is not ready.';
-      patch(id, { status: 'error', command, risk, reason, error: message });
+      patch(id, { status: 'error', command, risk, reason, needsApproval: false, error: message });
       logCommand({ intent, command, status: 'error', risk, reason, error: message });
       return;
     }
-    patch(id, { status: 'running', command, risk, reason, output: 'Running in terminal...' });
+    patch(id, { status: 'running', command, risk, reason, needsApproval: false, output: 'Running in terminal...' });
     await options.onLine(command);
-    patch(id, { status: 'done', command, risk, reason, output: 'Sent to terminal.' });
+    patch(id, { status: 'done', command, risk, reason, needsApproval: false, output: 'Sent to terminal.' });
     logCommand({ intent, command, status: 'sent_to_terminal', risk, reason });
   }
 
