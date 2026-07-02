@@ -9,6 +9,8 @@ import { CommandComposer } from './components/terminal/CommandComposer';
 import { SettingsDrawer } from './components/settings/SettingsDrawer';
 
 const firstTab = { id: 'tab-1', title: 'PowerShell', cwd: '~' };
+const defaultLogSettings = { command_log_policy: 'failed_only', crash_log_sharing_opt_in: false };
+
 function makeTab(cwd: string, index: number) {
   return { id: `tab-${Date.now()}-${index}`, title: index === 1 ? 'PowerShell' : `PowerShell ${index}`, cwd };
 }
@@ -55,11 +57,22 @@ export default function App() {
   const [showFullReasoning, setShowFullReasoning] = useState(false);
   const [profiles, setProfiles] = useState(DEFAULT_MODEL_PROFILES);
   const [selectedProfileId, setSelectedProfileId] = useState(String(DEFAULT_MODEL_PROFILES[0].id));
+  const [logSettings, setLogSettings] = useState(defaultLogSettings);
   const [input, setInput] = useState('');
 
   async function runInLiveShell(line: string) {
     const writer = api['send' + 'Pty'];
     await writer(activeTabId, `${line}\r`);
+  }
+
+  async function updateLogSettings(nextSettings) {
+    setLogSettings(nextSettings);
+    try {
+      const saved = await api.saveLogSettings(nextSettings);
+      setLogSettings(saved);
+    } catch {
+      setLogSettings(nextSettings);
+    }
   }
 
   const ai = useAiRun(selectedProfileId, { onLine: runInLiveShell });
@@ -78,6 +91,7 @@ export default function App() {
       setProfiles(next);
       setSelectedProfileId(String(next[0]?.id ?? DEFAULT_MODEL_PROFILES[0].id));
     }).catch(() => setProfiles(DEFAULT_MODEL_PROFILES));
+    api.getLogSettings().then(setLogSettings).catch(() => setLogSettings(defaultLogSettings));
     window.setTimeout(() => inputRef.current?.focus(), 100);
     return () => document.removeEventListener('contextmenu', preventMenu);
   }, []);
@@ -136,7 +150,7 @@ export default function App() {
         {appMode === 'ai' && <WorkingPanel entries={ai.entries} showFullReasoning={showFullReasoning} onApprove={ai.approveEntry} onCancel={ai.cancelEntry} />}
         {appMode === 'ai' && <CommandComposer ref={inputRef} cwd={cwd} value={input} disabled={ai.isRunning} onChange={setInput} onSubmit={submitPrompt} />}
       </section>
-      <SettingsDrawer open={settingsOpen} cwd={cwd} profiles={profiles} selectedProfileId={selectedProfileId} showFullReasoning={showFullReasoning} onSelectProfile={setSelectedProfileId} onToggleFullReasoning={setShowFullReasoning} onClose={() => setSettingsOpen(false)} />
+      <SettingsDrawer open={settingsOpen} cwd={cwd} profiles={profiles} selectedProfileId={selectedProfileId} showFullReasoning={showFullReasoning} logSettings={logSettings} onSelectProfile={setSelectedProfileId} onToggleFullReasoning={setShowFullReasoning} onChangeLogSettings={updateLogSettings} onClose={() => setSettingsOpen(false)} />
     </main>
   );
 }
