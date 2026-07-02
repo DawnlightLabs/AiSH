@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CliToolSpec {
     pub name: &'static str,
     pub safe_templates: &'static [&'static str],
@@ -24,7 +24,12 @@ pub fn built_in_registry() -> Vec<CliToolSpec> {
         },
         CliToolSpec {
             name: "git",
-            safe_templates: &["git status --short", "git branch --show-current", "git log --oneline -5", "git diff --stat"],
+            safe_templates: &[
+                "git status --short",
+                "git branch --show-current",
+                "git log --oneline -5",
+                "git diff --stat",
+            ],
             confirmation_templates: &["git reset --hard", "git clean -fd"],
             help_commands: &["git help", "git --version"],
         },
