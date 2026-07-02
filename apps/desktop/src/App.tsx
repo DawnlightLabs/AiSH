@@ -58,6 +58,7 @@ export default function App() {
   const [profiles, setProfiles] = useState(DEFAULT_MODEL_PROFILES);
   const [selectedProfileId, setSelectedProfileId] = useState(String(DEFAULT_MODEL_PROFILES[0].id));
   const [logSettings, setLogSettings] = useState(defaultLogSettings);
+  const [contextMode, setContextMode] = useState<'off' | 'auto' | 'agent'>('auto');
   const [input, setInput] = useState('');
 
   async function runInLiveShell(line: string) {
@@ -75,7 +76,7 @@ export default function App() {
     }
   }
 
-  const ai = useAiRun(selectedProfileId, { onLine: runInLiveShell });
+  const ai = useAiRun(selectedProfileId, contextMode, { onLine: runInLiveShell });
 
   useEffect(() => {
     const preventMenu = (event) => event.preventDefault();
@@ -150,7 +151,7 @@ export default function App() {
         {appMode === 'ai' && <WorkingPanel entries={ai.entries} showFullReasoning={showFullReasoning} onApprove={ai.approveEntry} onCancel={ai.cancelEntry} />}
         {appMode === 'ai' && <CommandComposer ref={inputRef} cwd={cwd} value={input} disabled={ai.isRunning} onChange={setInput} onSubmit={submitPrompt} />}
       </section>
-      <SettingsDrawer open={settingsOpen} cwd={cwd} profiles={profiles} selectedProfileId={selectedProfileId} showFullReasoning={showFullReasoning} logSettings={logSettings} onSelectProfile={setSelectedProfileId} onToggleFullReasoning={setShowFullReasoning} onChangeLogSettings={updateLogSettings} onClose={() => setSettingsOpen(false)} />
+      <SettingsDrawer open={settingsOpen} cwd={cwd} profiles={profiles} selectedProfileId={selectedProfileId} showFullReasoning={showFullReasoning} logSettings={logSettings} contextMode={contextMode} onChangeContextMode={setContextMode} onSelectProfile={setSelectedProfileId} onToggleFullReasoning={setShowFullReasoning} onChangeLogSettings={updateLogSettings} onClose={() => setSettingsOpen(false)} />
     </main>
   );
 }

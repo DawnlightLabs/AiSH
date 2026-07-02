@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { providerPlan, recordCommandLog, type ProviderPlan } from '../lib/api';
+import { providerPlan, recordCommandLog, type ProviderContextMode, type ProviderPlan } from '../lib/api';
 
 export interface TerminalEntry {
   id: string;
@@ -26,7 +26,7 @@ function logCommand(entry: {
   void recordCommandLog({ ...entry, surface: 'desktop' }).catch(() => undefined);
 }
 
-export function useAiRun(profileId: string, options: { onLine?: (line: string) => Promise<void> } = {}) {
+export function useAiRun(profileId: string, contextMode: ProviderContextMode = 'auto', options: { onLine?: (line: string) => Promise<void> } = {}) {
   const [entries, setEntries] = useState<TerminalEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<any>(null);
@@ -70,7 +70,7 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
     setEntries((items) => [...items, { id, intent: text, output: '', error: '', status: 'running' }]);
 
     try {
-      const plan = await providerPlan(profileId, text, 'ai_run');
+      const plan = await providerPlan(profileId, text, 'ai_run', contextMode);
       setResult(plan);
       patchPlanTrace(id, plan);
 

@@ -10,7 +10,8 @@ members = [
   "crates/aish-cli-knowledge",
   "crates/aish-ai",
   "crates/aish-safety",
-  "crates/aish-provider"
+  "crates/aish-provider",
+  "crates/aish-logging"
 ]
 resolver = "2"
 

@@ -4,7 +4,9 @@ use aish_ai::{run_gguf_model, ModelProfile, ModelRunRequest, ModelRunResult};
 use aish_completion::demo_suggestions;
 use aish_context::inspect_current_project;
 use aish_core::{AppMode, AppState, CachePolicy, CommandTrace, ContextLevel};
-use aish_provider::{plan_provider_input, parse_provider_mode, ProviderInputMode, ProviderPlan, ProviderPlanRequest};
+use aish_provider::{
+    parse_provider_mode, plan_provider_input, ProviderInputMode, ProviderPlan, ProviderPlanRequest,
+};
 use aish_safety::classify_risk;
 
 #[tauri::command]
@@ -38,11 +40,15 @@ pub fn complete(prefix: String) -> serde_json::Value {
 
 #[tauri::command]
 pub fn check_command_risk(command: String) -> serde_json::Value {
-    serde_json::to_value(classify_risk(&command)).unwrap_or_else(|_| serde_json::json!({ "risk": "medium" }))
+    serde_json::to_value(classify_risk(&command))
+        .unwrap_or_else(|_| serde_json::json!({ "risk": "medium" }))
 }
 
 #[tauri::command]
-pub fn execute_shell_command(command: String, allow_medium_risk: bool) -> Result<CommandTrace, String> {
+pub fn execute_shell_command(
+    command: String,
+    allow_medium_risk: bool,
+) -> Result<CommandTrace, String> {
     shell::run_shell_command(command, allow_medium_risk)
 }
 
@@ -59,26 +65,36 @@ pub fn save_model_profiles(profiles: Vec<ModelProfile>) -> Result<Vec<ModelProfi
 #[tauri::command]
 pub async fn run_local_model(profile_id: String, prompt: String) -> Result<ModelRunResult, String> {
     let profile = model_store::find_profile(&profile_id)?;
-    tauri::async_runtime::spawn_blocking(move || run_gguf_model(ModelRunRequest { profile, prompt }))
-        .await
-        .map_err(|error| format!("Model task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_gguf_model(ModelRunRequest { profile, prompt })
+    })
+    .await
+    .map_err(|error| format!("Model task failed: {error}"))?
 }
 
 #[tauri::command]
 pub async fn create_ai_card(profile_id: String, intent: String) -> Result<ModelRunResult, String> {
     let profile = model_store::find_profile(&profile_id)?;
-    let context = serde_json::to_value(inspect_current_project()).unwrap_or_else(|_| serde_json::json!({}));
+    let context =
+        serde_json::to_value(inspect_current_project()).unwrap_or_else(|_| serde_json::json!({}));
     let prompt = aish_ai::build_command_card_prompt(&intent, &context);
 
-    tauri::async_runtime::spawn_blocking(move || run_gguf_model(ModelRunRequest { profile, prompt }))
-        .await
-        .map_err(|error| format!("Model task failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_gguf_model(ModelRunRequest { profile, prompt })
+    })
+    .await
+    .map_err(|error| format!("Model task failed: {error}"))?
 }
 
 #[tauri::command]
-pub async fn provider_plan(profile_id: String, input: String, mode: String) -> Result<ProviderPlan, String> {
+pub async fn provider_plan(
+    profile_id: String,
+    input: String,
+    mode: String,
+) -> Result<ProviderPlan, String> {
     let profile = model_store::find_profile(&profile_id)?;
-    let context = serde_json::to_value(inspect_current_project()).unwrap_or_else(|_| serde_json::json!({}));
+    let context =
+        serde_json::to_value(inspect_current_project()).unwrap_or_else(|_| serde_json::json!({}));
     let provider_mode = parse_provider_mode(&mode).unwrap_or(ProviderInputMode::AiRun);
 
     tauri::async_runtime::spawn_blocking(move || {

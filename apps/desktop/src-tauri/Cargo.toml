@@ -23,3 +23,4 @@ aish-provider = { path = "../../../crates/aish-provider" }
 aish-safety = { path = "../../../crates/aish-safety" }
 aish-ai = { path = "../../../crates/aish-ai" }
 aish-pty = { path = "../../../crates/aish-pty" }
+aish-logging = { path = "../../../crates/aish-logging" }

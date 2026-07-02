@@ -13,8 +13,10 @@ path = "src/main_setup.rs"
 [dependencies]
 aish-ai = { path = "../../crates/aish-ai" }
 aish-core = { path = "../../crates/aish-core" }
+aish-context = { path = "../../crates/aish-context" }
 aish-provider = { path = "../../crates/aish-provider" }
 aish-safety = { path = "../../crates/aish-safety" }
+aish-logging = { path = "../../crates/aish-logging" }
 serde.workspace = true
 serde_json.workspace = true
 ureq = "2"

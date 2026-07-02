@@ -2,6 +2,7 @@ use aish_ai::{build_command_card_prompt, run_gguf_model, ModelProfile, ModelRunR
 use aish_core::{AiSubmode, AppMode, CachePolicy, ContextLevel, RiskLevel};
 use aish_safety::classify_risk;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,6 +70,14 @@ pub enum ProviderInputMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ProviderContextMode {
+    Off,
+    Auto,
+    Agent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderPlanAction {
     ShellCommand,
     ApprovalRequired,
@@ -102,6 +111,58 @@ pub struct ProviderPlan {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSessionCommand {
+    pub intent: Option<String>,
+    pub command: String,
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSession {
+    pub mode: ProviderInputMode,
+    pub context_mode: ProviderContextMode,
+    pub show_trace: bool,
+    pub command_memory: Vec<ProviderSessionCommand>,
+}
+
+impl Default for ProviderSession {
+    fn default() -> Self {
+        Self {
+            mode: ProviderInputMode::AiRun,
+            context_mode: ProviderContextMode::Auto,
+            show_trace: false,
+            command_memory: Vec::new(),
+        }
+    }
+}
+
+impl ProviderSession {
+    pub fn record_command(
+        &mut self,
+        intent: Option<&str>,
+        command: &str,
+        status: &str,
+        reason: Option<&str>,
+    ) {
+        self.command_memory.push(ProviderSessionCommand {
+            intent: intent.map(str::to_string),
+            command: command.to_string(),
+            status: status.to_string(),
+            reason: reason.map(str::to_string),
+        });
+        if self.command_memory.len() > 24 {
+            let overflow = self.command_memory.len() - 24;
+            self.command_memory.drain(0..overflow);
+        }
+    }
+
+    pub fn clear_context(&mut self) {
+        self.command_memory.clear();
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct CommandCard {
     action_type: String,
@@ -131,12 +192,18 @@ pub fn plan_provider_input(request: ProviderPlanRequest) -> ProviderPlan {
     }
 
     match request.mode.clone() {
-        ProviderInputMode::Normal => plan_literal_command(&input, request.surface, ProviderInputMode::Normal),
+        ProviderInputMode::Normal => {
+            plan_literal_command(&input, request.surface, ProviderInputMode::Normal)
+        }
         ProviderInputMode::AiRun => plan_ai_run(&input, request),
     }
 }
 
-pub fn plan_literal_command(command: &str, surface: String, mode: ProviderInputMode) -> ProviderPlan {
+pub fn plan_literal_command(
+    command: &str,
+    surface: String,
+    mode: ProviderInputMode,
+) -> ProviderPlan {
     let local = classify_risk(command);
     ProviderPlan {
         mode,
@@ -152,6 +219,22 @@ pub fn plan_literal_command(command: &str, surface: String, mode: ProviderInputM
         runtime: None,
         error: None,
     }
+}
+
+pub fn plan_failed_command_recovery(
+    command: &str,
+    surface: String,
+    context_json: serde_json::Value,
+    profile: Option<ModelProfile>,
+) -> ProviderPlan {
+    let intent = format!("The user typed this shell command and it failed: `{command}`. If it is a typo or wrong command, return one corrected shell command. If it cannot be fixed, explain why it failed as a fallback message.");
+    plan_provider_input(ProviderPlanRequest {
+        mode: ProviderInputMode::AiRun,
+        surface,
+        input: intent,
+        context_json,
+        profile,
+    })
 }
 
 fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
@@ -175,7 +258,9 @@ fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
     let prompt = build_command_card_prompt(input, &request.context_json);
     let result = run_gguf_model(ModelRunRequest { profile, prompt });
     let Ok(result) = result else {
-        let error = result.err().unwrap_or_else(|| "unknown model error".to_string());
+        let error = result
+            .err()
+            .unwrap_or_else(|| "unknown model error".to_string());
         return ProviderPlan {
             mode: ProviderInputMode::AiRun,
             surface: request.surface,
@@ -232,7 +317,12 @@ fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
         };
     }
 
-    let Some(command) = card.command.as_deref().map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(command) = card
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return ProviderPlan {
             mode: ProviderInputMode::AiRun,
             surface: request.surface,
@@ -241,7 +331,9 @@ fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
             command: None,
             risk: parse_model_risk(card.risk.as_deref()),
             needs_approval: false,
-            reason: card.reason.unwrap_or_else(|| "AiSH returned no command.".to_string()),
+            reason: card
+                .reason
+                .unwrap_or_else(|| "AiSH returned no command.".to_string()),
             fallback_message: None,
             model_output: Some(body),
             runtime: Some(runtime),
@@ -273,7 +365,8 @@ pub fn evaluate_generated_command(
     let model = parse_model_risk(model_risk);
     let risk = combine_risk(&local.risk, &model);
     let model_high = matches!(model, RiskLevel::High);
-    let needs_approval = local.needs_confirmation || matches!(local.risk, RiskLevel::High) || model_high;
+    let needs_approval =
+        local.needs_confirmation || matches!(local.risk, RiskLevel::High) || model_high;
     let reason = if local.needs_confirmation || matches!(local.risk, RiskLevel::High) {
         local.reason.clone()
     } else {
@@ -286,7 +379,11 @@ pub fn evaluate_generated_command(
     ProviderPlan {
         mode: ProviderInputMode::AiRun,
         surface,
-        action: if needs_approval { ProviderPlanAction::ApprovalRequired } else { ProviderPlanAction::ShellCommand },
+        action: if needs_approval {
+            ProviderPlanAction::ApprovalRequired
+        } else {
+            ProviderPlanAction::ShellCommand
+        },
         intent: intent.to_string(),
         command: Some(command.to_string()),
         risk,
@@ -297,6 +394,33 @@ pub fn evaluate_generated_command(
         runtime,
         error: None,
     }
+}
+
+pub fn build_provider_context(
+    mut base: serde_json::Value,
+    session: &ProviderSession,
+) -> serde_json::Value {
+    if session.context_mode == ProviderContextMode::Off {
+        return serde_json::json!({ "context_mode": describe_context_mode(&session.context_mode) });
+    }
+    if !base.is_object() {
+        base = serde_json::json!({ "base": base });
+    }
+    if let Some(object) = base.as_object_mut() {
+        object.insert(
+            "context_mode".to_string(),
+            serde_json::json!(describe_context_mode(&session.context_mode)),
+        );
+        object.insert(
+            "session_commands".to_string(),
+            serde_json::to_value(&session.command_memory).unwrap_or_else(|_| serde_json::json!([])),
+        );
+        object.insert(
+            "agent_context_allowed".to_string(),
+            serde_json::json!(session.context_mode == ProviderContextMode::Agent),
+        );
+    }
+    base
 }
 
 pub fn parse_provider_mode(value: &str) -> Option<ProviderInputMode> {
@@ -311,6 +435,47 @@ pub fn describe_provider_mode(mode: &ProviderInputMode) -> &'static str {
     match mode {
         ProviderInputMode::Normal => "normal",
         ProviderInputMode::AiRun => "ai_run",
+    }
+}
+
+pub fn parse_context_mode(value: &str) -> Option<ProviderContextMode> {
+    match value.to_lowercase().as_str() {
+        "off" | "none" | "manual" => Some(ProviderContextMode::Off),
+        "on" | "auto" => Some(ProviderContextMode::Auto),
+        "agent" | "agent_mode" => Some(ProviderContextMode::Agent),
+        _ => None,
+    }
+}
+
+pub fn describe_context_mode(mode: &ProviderContextMode) -> &'static str {
+    match mode {
+        ProviderContextMode::Off => "off",
+        ProviderContextMode::Auto => "auto",
+        ProviderContextMode::Agent => "agent",
+    }
+}
+
+pub fn default_model_profile() -> ModelProfile {
+    let home = home_dir().display().to_string().replace('\\', "/");
+    let model_path = std::env::var("AISH_MODEL_PATH").unwrap_or_else(|_| {
+        format!("{home}/Downloads/aish-model/models/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf")
+    });
+    let llama_cli_path = std::env::var("AISH_LLAMA_CLI").unwrap_or_else(|_| {
+        if std::env::consts::OS == "windows" {
+            format!("{home}/Downloads/llama.cpp/build/bin/Release/llama-cli.exe")
+        } else {
+            "llama-cli".to_string()
+        }
+    });
+    ModelProfile {
+        id: "qwen25-coder-15b-q4-k-m".to_string(),
+        label: "Qwen2.5 Coder 1.5B Instruct Q4_K_M".to_string(),
+        family: "qwen2.5-coder".to_string(),
+        model_path,
+        llama_cli_path,
+        context_tokens: 4096,
+        max_tokens: 192,
+        temperature: 0.1,
     }
 }
 
@@ -330,4 +495,11 @@ fn combine_risk(local: &RiskLevel, model: &RiskLevel) -> RiskLevel {
     } else {
         RiskLevel::Low
     }
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }

@@ -2,10 +2,12 @@ mod logging;
 mod setup;
 
 use aish_ai::{build_command_card_prompt, run_gguf_model, ModelProfile, ModelRunRequest};
+use aish_context::inspect_current_project;
 use aish_core::RiskLevel;
 use aish_provider::{
-    describe_provider_mode, parse_provider_mode, plan_literal_command, plan_provider_input,
-    ProviderInputMode, ProviderPlan, ProviderPlanAction, ProviderPlanRequest,
+    build_provider_context, default_model_profile, describe_context_mode, describe_provider_mode,
+    parse_context_mode, parse_provider_mode, plan_failed_command_recovery, plan_provider_input,
+    ProviderInputMode, ProviderPlan, ProviderPlanAction, ProviderPlanRequest, ProviderSession,
 };
 use aish_safety::classify_risk;
 use serde::Deserialize;
@@ -40,6 +42,7 @@ struct ProviderState {
     pending: Option<PendingCommand>,
     show_trace: bool,
     mode: ProviderInputMode,
+    session: ProviderSession,
 }
 
 fn main() {
@@ -51,6 +54,7 @@ fn main() {
         pending: None,
         show_trace: false,
         mode: ProviderInputMode::AiRun,
+        session: ProviderSession::default(),
     };
     setup::ensure_model(&state.profile);
 
@@ -81,27 +85,23 @@ fn main() {
             continue;
         }
 
-        let plan = if let Some(command) = input.strip_prefix("//").map(str::trim) {
-            plan_literal_command(
-                command,
-                "provider_shell".to_string(),
-                ProviderInputMode::Normal,
-            )
-        } else if state.mode == ProviderInputMode::Normal || looks_like_direct_command(input) {
-            plan_literal_command(
-                input,
-                "provider_shell".to_string(),
-                ProviderInputMode::Normal,
-            )
-        } else {
-            plan_provider_input(ProviderPlanRequest {
-                mode: ProviderInputMode::AiRun,
-                surface: "provider_shell".to_string(),
-                input: input.to_string(),
-                context_json: serde_json::json!({}),
-                profile: Some(state.profile.clone()),
-            })
-        };
+        if let Some(command) = input.strip_prefix("//").map(str::trim) {
+            run_user_command_or_recover(command, &mut state);
+            continue;
+        }
+
+        if state.mode == ProviderInputMode::Normal || looks_like_command_attempt(input) {
+            run_user_command_or_recover(input, &mut state);
+            continue;
+        }
+
+        let plan = plan_provider_input(ProviderPlanRequest {
+            mode: ProviderInputMode::AiRun,
+            surface: "provider_shell".to_string(),
+            input: input.to_string(),
+            context_json: provider_context(&state),
+            profile: Some(state.profile.clone()),
+        });
 
         handle_plan(plan, &mut state);
     }
@@ -125,6 +125,32 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             Some(value) => match parse_provider_mode(value) {
                 Some(mode) => set_mode(state, mode),
                 None => println!("usage: /mode normal | /mode ai"),
+            },
+        },
+        "/context" => match parts.next() {
+            None => {
+                println!(
+                    "context: {}",
+                    describe_context_mode(&state.session.context_mode)
+                );
+                println!("session commands: {}", state.session.command_memory.len());
+                println!("usage: /context off | /context auto | /context agent | /context clear");
+            }
+            Some("clear") => {
+                state.session.clear_context();
+                println!("context memory cleared");
+            }
+            Some(value) => match parse_context_mode(value) {
+                Some(mode) => {
+                    state.session.context_mode = mode;
+                    println!(
+                        "context: {}",
+                        describe_context_mode(&state.session.context_mode)
+                    );
+                }
+                None => println!(
+                    "usage: /context off | /context auto | /context agent | /context clear"
+                ),
             },
         },
         "/status" => {
@@ -278,7 +304,8 @@ fn print_help() {
 }
 
 fn set_mode(state: &mut ProviderState, mode: ProviderInputMode) {
-    state.mode = mode;
+    state.mode = mode.clone();
+    state.session.mode = mode;
     state.pending = None;
     println!("mode: {}", describe_provider_mode(&state.mode));
 }
@@ -399,6 +426,72 @@ fn risk_label(risk: &RiskLevel) -> &'static str {
         RiskLevel::Medium => "medium",
         RiskLevel::High => "high",
     }
+}
+
+fn provider_context(state: &ProviderState) -> serde_json::Value {
+    let base =
+        serde_json::to_value(inspect_current_project()).unwrap_or_else(|_| serde_json::json!({}));
+    build_provider_context(base, &state.session)
+}
+
+fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
+    let ok = run_shell_command(command);
+    logging::record_command(
+        None,
+        Some(command),
+        if ok { "success" } else { "failed" },
+        Some("user"),
+        Some("User-entered command."),
+        if ok {
+            None
+        } else {
+            Some("command exited unsuccessfully")
+        },
+    );
+    if ok {
+        return;
+    }
+    println!("AiSH detected that command failed. Trying to diagnose or correct it...");
+    let recovery = plan_failed_command_recovery(
+        command,
+        "provider_shell".to_string(),
+        provider_context(state),
+        Some(state.profile.clone()),
+    );
+    handle_plan(recovery, state);
+}
+
+fn looks_like_command_attempt(input: &str) -> bool {
+    if looks_like_direct_command(input) {
+        return true;
+    }
+
+    let words: Vec<&str> = input.split_whitespace().collect();
+    if words.is_empty() || input.ends_with('?') {
+        return false;
+    }
+
+    let first = words[0].to_lowercase();
+    let nlp_verbs = [
+        "show", "find", "create", "make", "run", "install", "open", "explain", "what", "why",
+        "how", "can", "please", "list", "tell", "check",
+    ];
+
+    if nlp_verbs.contains(&first.as_str()) {
+        return false;
+    }
+
+    input.contains("--")
+        || input.contains(" -")
+        || input.contains('|')
+        || input.contains("&&")
+        || input.contains('\\')
+        || input.contains('/')
+        || input.contains('.')
+        || (words.len() > 1
+            && first
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
 }
 
 fn run_ai_request(intent: &str, state: &mut ProviderState) {
@@ -649,27 +742,7 @@ fn looks_like_direct_command(input: &str) -> bool {
 }
 
 fn default_profile() -> ModelProfile {
-    let home = home_dir().display().to_string().replace('\\', "/");
-    let model_path = env::var("AISH_MODEL_PATH").unwrap_or_else(|_| {
-        format!("{home}/Downloads/aish-model/models/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf")
-    });
-    let llama_cli_path = env::var("AISH_LLAMA_CLI").unwrap_or_else(|_| {
-        if env::consts::OS == "windows" {
-            format!("{home}/Downloads/llama.cpp/build/bin/Release/llama-cli.exe")
-        } else {
-            "llama-cli".to_string()
-        }
-    });
-    ModelProfile {
-        id: "qwen25-coder-15b-q4-k-m".to_string(),
-        label: "Qwen2.5 Coder 1.5B Instruct Q4_K_M".to_string(),
-        family: "qwen2.5-coder".to_string(),
-        model_path,
-        llama_cli_path,
-        context_tokens: 4096,
-        max_tokens: 192,
-        temperature: 0.1,
-    }
+    default_model_profile()
 }
 
 fn prompt_cwd(mode: &ProviderInputMode) -> String {

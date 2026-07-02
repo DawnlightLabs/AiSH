@@ -1,4 +1,4 @@
-import type { CommandLogPolicy, LogSettings, ModelProfile } from '../../lib/api';
+import type { CommandLogPolicy, LogSettings, ModelProfile, ProviderContextMode } from '../../lib/api';
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -7,9 +7,11 @@ interface SettingsDrawerProps {
   selectedProfileId: string;
   showFullReasoning: boolean;
   logSettings: LogSettings;
+  contextMode: ProviderContextMode;
   onSelectProfile: (id: string) => void;
   onToggleFullReasoning: (value: boolean) => void;
   onChangeLogSettings: (settings: LogSettings) => void;
+  onChangeContextMode: (mode: ProviderContextMode) => void;
   onClose: () => void;
 }
 
@@ -19,7 +21,7 @@ const logPolicyLabels: Record<CommandLogPolicy, string> = {
   all: 'Record all AiSH commands locally',
 };
 
-export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, showFullReasoning, logSettings, onSelectProfile, onToggleFullReasoning, onChangeLogSettings, onClose }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, showFullReasoning, logSettings, contextMode, onSelectProfile, onToggleFullReasoning, onChangeLogSettings, onChangeContextMode, onClose }: SettingsDrawerProps) {
   if (!open) return null;
 
   function changeLogPolicy(command_log_policy: CommandLogPolicy) {
@@ -52,6 +54,14 @@ export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, showFul
         <label className="settings-check">
           <input type="checkbox" checked={showFullReasoning} onChange={(event) => onToggleFullReasoning(event.target.checked)} />
           <span>Show full AI Run trace in Working</span>
+        </label>
+        <label className="settings-field">
+          <span>Context mode</span>
+          <select value={contextMode} onChange={(event) => onChangeContextMode(event.target.value as ProviderContextMode)}>
+            <option value="off">Off — only the current prompt</option>
+            <option value="auto">Auto — project context and AiSH command memory</option>
+            <option value="agent">Agent — allow expanded project context</option>
+          </select>
         </label>
         <label className="settings-field">
           <span>Local command logs</span>
