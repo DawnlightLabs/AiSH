@@ -112,7 +112,7 @@ struct CommandCard {
 }
 
 pub fn plan_provider_input(request: ProviderPlanRequest) -> ProviderPlan {
-    let input = request.input.trim();
+    let input = request.input.trim().to_string();
     if input.is_empty() {
         return ProviderPlan {
             mode: request.mode,
@@ -131,8 +131,8 @@ pub fn plan_provider_input(request: ProviderPlanRequest) -> ProviderPlan {
     }
 
     match request.mode {
-        ProviderInputMode::Normal => plan_literal_command(input, request.surface, ProviderInputMode::Normal),
-        ProviderInputMode::AiRun => plan_ai_run(input, request),
+        ProviderInputMode::Normal => plan_literal_command(&input, request.surface, ProviderInputMode::Normal),
+        ProviderInputMode::AiRun => plan_ai_run(&input, request),
     }
 }
 
@@ -146,7 +146,7 @@ pub fn plan_literal_command(command: &str, surface: String, mode: ProviderInputM
         command: Some(command.to_string()),
         risk: local.risk,
         needs_approval: false,
-        reason: "Normal mode passes commands through to the user's shell.".to_string(),
+        reason: "Normal mode command.".to_string(),
         fallback_message: None,
         model_output: None,
         runtime: None,
@@ -271,13 +271,10 @@ pub fn evaluate_generated_command(
 ) -> ProviderPlan {
     let local = classify_risk(command);
     let model = parse_model_risk(model_risk);
-    let unrecognized_low_risk_gate = local.needs_confirmation && is_unrecognized_read_only_gate(&local.reason);
-    let effective_local_risk = if unrecognized_low_risk_gate { RiskLevel::Low } else { local.risk.clone() };
-    let risk = combine_risk(&effective_local_risk, &model);
+    let risk = combine_risk(&local.risk, &model);
     let model_high = matches!(model, RiskLevel::High);
-    let local_needs_approval = local.needs_confirmation && !unrecognized_low_risk_gate;
-    let needs_approval = local_needs_approval || matches!(effective_local_risk, RiskLevel::High) || model_high;
-    let reason = if local_needs_approval || matches!(effective_local_risk, RiskLevel::High) {
+    let needs_approval = local.needs_confirmation || matches!(local.risk, RiskLevel::High) || model_high;
+    let reason = if local.needs_confirmation || matches!(local.risk, RiskLevel::High) {
         local.reason.clone()
     } else {
         model_reason
@@ -333,9 +330,4 @@ fn combine_risk(local: &RiskLevel, model: &RiskLevel) -> RiskLevel {
     } else {
         RiskLevel::Low
     }
-}
-
-fn is_unrecognized_read_only_gate(reason: &str) -> bool {
-    let lower = reason.to_lowercase();
-    lower.contains("not recognized as read-only") || lower.contains("approval is required")
 }
