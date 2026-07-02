@@ -108,22 +108,25 @@ fn shell_family(os: &str, shell: &str) -> &'static str {
     }
 }
 
-pub fn build_command_card_prompt(intent: &str, _context_json: &serde_json::Value) -> String {
+pub fn build_command_card_prompt(intent: &str, context_json: &serde_json::Value) -> String {
     let os = target_os();
     let shell = target_shell();
     let family = shell_family(&os, &shell);
+    let context = serde_json::to_string_pretty(context_json).unwrap_or_else(|_| "{}".to_string());
+
     let command_contract = match family {
-        "powershell" => "Return one PowerShell command. Use PowerShell cmdlets and syntax. Use $env:USERPROFILE for user-profile folders. Build nested user folders with Join-Path. Do not output cmd.exe syntax unless the user asks for cmd.exe.",
+        "powershell" => "Return one Windows PowerShell-compatible command. Use PowerShell cmdlets and syntax only. Use Set-Location for changing folders. Use Get-ChildItem for listing/searching. Use Remove-Item -LiteralPath <path> -Recurse -Force for folder deletion. Do not use cmd.exe commands such as del/rmdir/copy/xcopy, and do not use cmd.exe chaining. Use semicolon-separated PowerShell statements when chaining is necessary. Never use && for Windows PowerShell compatibility.",
         "fish" => "Return one fish-compatible shell command. Use POSIX-style filesystem paths where possible, but avoid bash-only syntax when fish syntax differs. Use $HOME for user-profile folders.",
         _ => "Return one POSIX shell command suitable for bash/zsh. Use $HOME for user-profile folders. Use find/ls/grep/sed/awk/git/npm style commands where appropriate.",
     };
+
     let path_rules = match family {
-        "powershell" => "If no path is named, omit -Path and rely on the live shell current location. When listing a named folder, put the folder in -Path and do not also use that folder name as -Filter. Use -Filter only when searching for an unknown item by name. Use -File only when files specifically are requested. Use Select-Object -ExpandProperty FullName only when exact paths or locations are requested.",
-        _ => "If no path is named, use . or omit the path and rely on the live shell current location. When listing a named folder, pass the folder as the command target. Use find -name only when searching for an unknown item by name. Use file-only predicates only when files specifically are requested. Print full paths only when exact paths or locations are requested.",
+        "powershell" => "Path rules for PowerShell: if no path is named, omit -Path and rely on the live shell current location. If the user names Downloads/Desktop/Documents, build it with Join-Path $env:USERPROFILE '<FolderName>'. If the user provides an absolute path such as D:\\, C:\\work, /tmp, or ~/work, use that path directly; never prefix it with $env:USERPROFILE or $HOME. Never produce paths like $env:USERPROFILE\\D:\\. Use -LiteralPath for exact paths. Use -Filter only for filename patterns, not for folder names. Use -File only when files specifically are requested. Use Select-Object -ExpandProperty FullName only when exact paths or locations are requested.",
+        _ => "Path rules for POSIX shells: if no path is named, use . or omit the path and rely on the live shell current location. If the user names Downloads/Desktop/Documents, build it from $HOME. If the user provides an absolute path such as /tmp or /Volumes/Data, use it directly. Use find -name only when searching for an unknown item by name. Use file-only predicates only when files specifically are requested. Print full paths only when exact paths or locations are requested.",
     };
 
     format!(
-        "You are Ken, the AiSH command planner.\nReturn exactly one JSON object and nothing else. No markdown. No prose. No thinking text.\nUse keys: action_type, command, risk, reason. For fallback use action_type, fallback_message, reason.\nThe command must be a single runnable command for this environment.\n\nEnvironment:\n- OS: {os}\n- Shell: {shell}\n- Shell family: {family}\n\nCommand contract:\n- {command_contract}\n- The command runs in the user's existing live shell session.\n- Do not invent the current directory.\n- Never output placeholder usernames, tutorial paths, angle-bracket placeholders, or sample targets not present in the user request.\n- If a user-profile folder is named, build it from the shell's home environment variable.\n\nPath and output rules:\n- {path_rules}\n- Do not copy filenames, folder names, or examples that are not in the user request.\n\nRisk rules:\n- Read-only inspection, recursive listing, sorting, filtering, text search, status checks, version checks, and path searches are low risk even if long-running.\n- Commands that delete, overwrite, move, rename, install, uninstall, publish, deploy, push, mutate git history, change permissions, edit registry, stop services/processes, or alter cloud/system state are medium or high risk.\n- For medium/high risk, still return the best command card. The app or provider shell will request approval.\n\nQuality rules:\n- Keep the command complete and directly runnable.\n- Keep the reason short and factual.\n\nUser request:\n{intent}\n"
+        "You are Ken, the AiSH command planner.\nReturn exactly one JSON object and nothing else. No markdown. No prose. No thinking text.\nUse keys: action_type, command, risk, reason. For fallback use action_type, fallback_message, reason.\nThe command must be a single runnable command for this environment.\n\nEnvironment:\n- OS: {os}\n- Shell: {shell}\n- Shell family: {family}\n- Context JSON: {context}\n\nCommand contract:\n- {command_contract}\n- The command runs in the user's existing live shell session.\n- Do not invent the current directory. Use the current directory from context when available.\n- Never output placeholder usernames, tutorial paths, angle-bracket placeholders, or sample targets not present in the user request.\n- If a user-profile folder is named, build it from the shell's home environment variable.\n- If the user says go to, cd to, change to, or open a folder in the shell, return a directory-change command, not a literal phrase.\n- If the user asks to delete/remove a file or folder, return the correct destructive command and mark risk high. The app or provider shell will request approval.\n\nPath and output rules:\n- {path_rules}\n- Do not copy filenames, folder names, or examples that are not in the user request.\n\nRisk rules:\n- Read-only inspection, recursive listing, sorting, filtering, text search, status checks, version checks, and path searches are low risk even if long-running.\n- Commands that delete, overwrite, move, rename, install, uninstall, publish, deploy, push, mutate git history, change permissions, edit registry, stop services/processes, or alter cloud/system state are medium or high risk.\n- For medium/high risk, still return the best command card. The app or provider shell will request approval.\n\nQuality rules:\n- Keep the command complete and directly runnable.\n- Keep the reason short and factual.\n\nUser request:\n{intent}\n"
     )
 }
 
@@ -218,81 +221,31 @@ fn clean_runtime_text(raw: &str) -> String {
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.contains("llama.cpp")
-            || trimmed.starts_with("build")
-            || trimmed.starts_with("model")
-            || trimmed.starts_with("modalities")
-        {
+        if trimmed.contains("llama_") || trimmed.contains("ggml_") || trimmed.contains("print_info:") {
             continue;
         }
-        if trimmed == "available commands:"
-            || trimmed.starts_with("/exit")
-            || trimmed.starts_with("/regen")
-            || trimmed.starts_with("/clear")
-            || trimmed.starts_with("/read")
-            || trimmed.starts_with("/glob")
-        {
-            continue;
-        }
-        if trimmed.starts_with('>') {
+        if trimmed.starts_with("You are Ken") {
             skipping_prompt = true;
             continue;
         }
-        if skipping_prompt
-            && (trimmed.starts_with("Schema")
-                || trimmed.starts_with("Rules:")
-                || trimmed.starts_with("User request:")
-                || trimmed.starts_with("Example"))
-        {
-            continue;
-        }
-        if trimmed.starts_with("[") && trimmed.contains("thinking") {
-            continue;
-        }
-        kept.push(line);
-    }
-
-    kept.join("\n").trim().to_string()
-}
-
-fn extract_json_object(text: &str) -> Option<String> {
-    let needle = "\"action_type\"";
-    let anchor = text.rfind(needle)?;
-    let start = text[..anchor].rfind('{')?;
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (offset, ch) in text[start..].char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' && in_string {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = !in_string;
-            continue;
-        }
-        if in_string {
-            continue;
-        }
-        if ch == '{' {
-            depth += 1;
-        } else if ch == '}' {
-            depth = depth.saturating_sub(1);
-            if depth == 0 {
-                let end = start + offset + ch.len_utf8();
-                return Some(text[start..end].trim().trim_matches('`').trim().to_string());
+        if skipping_prompt {
+            if trimmed.starts_with('{') {
+                skipping_prompt = false;
+            } else {
+                continue;
             }
         }
+        kept.push(trimmed.to_string());
     }
 
-    None
+    kept.join("\n")
 }
 
-pub fn default_timeout() -> Duration {
-    Duration::from_secs(60)
+fn extract_json_object(raw: &str) -> Option<String> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(raw[start..=end].trim().to_string())
 }
