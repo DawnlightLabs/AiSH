@@ -1,3 +1,4 @@
+mod logging;
 mod setup;
 
 use aish_ai::{build_command_card_prompt, run_gguf_model, ModelProfile, ModelRunRequest};
@@ -23,6 +24,7 @@ struct CommandCard {
 
 #[derive(Debug, Clone)]
 struct PendingCommand {
+    intent: Option<String>,
     command: String,
     risk: String,
     reason: String,
@@ -66,7 +68,7 @@ fn main() {
 
         let input = input.strip_prefix("//").map(str::trim).unwrap_or(input);
         if looks_like_direct_command(input) {
-            approve_or_run(input, None, &mut state);
+            approve_or_run(input, None, &mut state, None);
         } else {
             run_ai_request(input, &mut state);
         }
@@ -85,6 +87,7 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
         "/help" => print_help(),
         "/setup" => setup::run_setup_wizard(false),
         "/status" => {
+            let settings = logging::read_settings();
             println!("creator: {CREATOR}");
             println!("copyright: {COPYRIGHT}");
             println!("os: {}", env::consts::OS);
@@ -92,7 +95,42 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             println!("model: {}", state.profile.label);
             println!("model_path: {}", state.profile.model_path);
             println!("llama_cli: {}", state.profile.llama_cli_path);
+            println!("command_log_policy: {}", logging::describe_policy(&settings.command_log_policy));
+            println!("command_log_path: {}", logging::command_log_path().display());
+            println!("crash_log_sharing_opt_in: {}", settings.crash_log_sharing_opt_in);
         }
+        "/logs" => match parts.next() {
+            None => {
+                let settings = logging::read_settings();
+                println!("command log policy: {}", logging::describe_policy(&settings.command_log_policy));
+                println!("command log path: {}", logging::command_log_path().display());
+                println!("usage: /logs off | /logs failed | /logs all");
+            }
+            Some(value) => match logging::parse_policy(value) {
+                Some(policy) => match logging::set_policy(policy) {
+                    Ok(settings) => println!("command log policy: {}", logging::describe_policy(&settings.command_log_policy)),
+                    Err(error) => eprintln!("failed to save log settings: {error}"),
+                },
+                None => println!("usage: /logs off | /logs failed | /logs all"),
+            },
+        },
+        "/crash-reports" | "/crash" => match parts.next() {
+            None => {
+                let settings = logging::read_settings();
+                println!("crash-log sharing opt-in: {}", settings.crash_log_sharing_opt_in);
+                println!("AiSH stores logs locally in this build and does not upload them.");
+                println!("usage: /crash-reports on | /crash-reports off");
+            }
+            Some("on") | Some("yes") => match logging::set_crash_log_sharing(true) {
+                Ok(_) => println!("crash-log sharing preference: on"),
+                Err(error) => eprintln!("failed to save crash-log preference: {error}"),
+            },
+            Some("off") | Some("no") => match logging::set_crash_log_sharing(false) {
+                Ok(_) => println!("crash-log sharing preference: off"),
+                Err(error) => eprintln!("failed to save crash-log preference: {error}"),
+            },
+            _ => println!("usage: /crash-reports on | /crash-reports off"),
+        },
         "/model" => match (parts.next(), parts.next()) {
             (None, _) => println!("model: {}", state.profile.label),
             (Some("list"), _) => println!("{}", state.profile.label),
@@ -108,13 +146,33 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             if let Some(pending) = state.pending.take() {
                 println!("approved: {} ({})", pending.command, pending.risk);
                 println!("reason: {}", pending.reason);
-                run_shell_command(&pending.command);
+                let ok = run_shell_command(&pending.command);
+                logging::record_command(
+                    pending.intent.as_deref(),
+                    Some(&pending.command),
+                    if ok { "success" } else { "failed" },
+                    Some(&pending.risk),
+                    Some(&pending.reason),
+                    if ok { None } else { Some("command exited unsuccessfully") },
+                );
             } else {
                 println!("no pending command");
             }
         }
         "/cancel" => {
-            if state.pending.take().is_some() { println!("pending command cancelled"); } else { println!("no pending command"); }
+            if let Some(pending) = state.pending.take() {
+                logging::record_command(
+                    pending.intent.as_deref(),
+                    Some(&pending.command),
+                    "cancelled",
+                    Some(&pending.risk),
+                    Some(&pending.reason),
+                    None,
+                );
+                println!("pending command cancelled");
+            } else {
+                println!("no pending command");
+            }
         }
         _ => println!("unknown slash command. Try /help."),
     }
@@ -127,6 +185,9 @@ fn print_help() {
     println!("  /model list            list enabled models");
     println!("  /status                show provider status");
     println!("  /setup                 run setup wizard");
+    println!("  /logs                  show local command log settings");
+    println!("  /logs off|failed|all   set local command log policy");
+    println!("  /crash-reports on|off  set saved crash-log sharing preference");
     println!("  /reasoning on|off      toggle full working trace");
     println!("  /working on|off        alias for reasoning trace");
     println!("  /approve               approve pending risky command");
@@ -139,7 +200,9 @@ fn run_ai_request(intent: &str, state: &mut ProviderState) {
     let prompt = build_command_card_prompt(intent, &serde_json::json!({}));
     let result = run_gguf_model(ModelRunRequest { profile: state.profile.clone(), prompt });
     let Ok(result) = result else {
-        println!("AiSH model error: {}", result.err().unwrap_or_else(|| "unknown error".to_string()));
+        let error = result.err().unwrap_or_else(|| "unknown error".to_string());
+        println!("AiSH model error: {error}");
+        logging::record_command(Some(intent), None, "error", None, None, Some(&error));
         return;
     };
 
@@ -147,16 +210,20 @@ fn run_ai_request(intent: &str, state: &mut ProviderState) {
     let Ok(card) = serde_json::from_str::<CommandCard>(body) else {
         println!("AiSH could not parse a command card.");
         if state.show_trace { println!("raw: {body}"); }
+        logging::record_command(Some(intent), None, "error", None, None, Some("could not parse command card"));
         return;
     };
 
     if card.action_type == "fallback_message" {
-        println!("{}", card.fallback_message.unwrap_or_else(|| card.reason.unwrap_or_else(|| "No command available.".to_string())));
+        let message = card.fallback_message.unwrap_or_else(|| card.reason.unwrap_or_else(|| "No command available.".to_string()));
+        println!("{message}");
+        logging::record_command(Some(intent), None, "fallback", None, Some(&message), None);
         return;
     }
 
     let Some(command) = card.command.as_deref().map(str::trim).filter(|value| !value.is_empty()) else {
         println!("AiSH returned no command.");
+        logging::record_command(Some(intent), None, "error", card.risk.as_deref(), card.reason.as_deref(), Some("empty command"));
         return;
     };
 
@@ -168,10 +235,10 @@ fn run_ai_request(intent: &str, state: &mut ProviderState) {
         println!("working: reason: {reason}");
     }
 
-    approve_or_run(command, Some((card.risk.as_deref().unwrap_or("medium"), &reason)), state);
+    approve_or_run(command, Some((card.risk.as_deref().unwrap_or("medium"), &reason)), state, Some(intent));
 }
 
-fn approve_or_run(command: &str, model_assessment: Option<(&str, &str)>, state: &mut ProviderState) {
+fn approve_or_run(command: &str, model_assessment: Option<(&str, &str)>, state: &mut ProviderState, intent: Option<&str>) {
     let local = classify_risk(command);
     let local_reason = local.reason.clone();
     let model_risk = model_assessment.map(|(risk, _)| risk).unwrap_or("low");
@@ -192,6 +259,7 @@ fn approve_or_run(command: &str, model_assessment: Option<(&str, &str)>, state: 
 
     if needs_confirmation {
         state.pending = Some(PendingCommand {
+            intent: intent.map(str::to_string),
             command: command.to_string(),
             risk: risk.to_string(),
             reason: reason.clone(),
@@ -200,8 +268,17 @@ fn approve_or_run(command: &str, model_assessment: Option<(&str, &str)>, state: 
         println!("reason: {reason}");
         println!("command: {command}");
         println!("type /approve or /cancel");
+        logging::record_command(intent, Some(command), "approval_required", Some(risk), Some(&reason), None);
     } else {
-        run_shell_command(command);
+        let ok = run_shell_command(command);
+        logging::record_command(
+            intent,
+            Some(command),
+            if ok { "success" } else { "failed" },
+            Some(risk),
+            Some(&reason),
+            if ok { None } else { Some("command exited unsuccessfully") },
+        );
     }
 }
 
@@ -215,8 +292,8 @@ fn combined_risk(local: &RiskLevel, model_risk: &str) -> &'static str {
     }
 }
 
-fn run_shell_command(command: &str) {
-    if handle_cd(command) { return; }
+fn run_shell_command(command: &str) -> bool {
+    if let Some(ok) = handle_cd(command) { return ok; }
     let output = if env::consts::OS == "windows" {
         Command::new("powershell.exe").args(["-NoLogo", "-NoProfile", "-Command", command]).output()
     } else {
@@ -226,12 +303,16 @@ fn run_shell_command(command: &str) {
         Ok(output) => {
             print!("{}", String::from_utf8_lossy(&output.stdout));
             eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            output.status.success()
         }
-        Err(error) => eprintln!("failed to run command: {error}"),
+        Err(error) => {
+            eprintln!("failed to run command: {error}");
+            false
+        }
     }
 }
 
-fn handle_cd(command: &str) -> bool {
+fn handle_cd(command: &str) -> Option<bool> {
     let trimmed = command.trim();
     let lower = trimmed.to_lowercase();
     let target = if lower == "cd" || lower == "set-location" {
@@ -241,10 +322,14 @@ fn handle_cd(command: &str) -> bool {
     } else if lower.starts_with("set-location ") {
         PathBuf::from(unquote(&trimmed[13..]))
     } else {
-        return false;
+        return None;
     };
-    if let Err(error) = env::set_current_dir(expand_home(target)) { eprintln!("cd failed: {error}"); }
-    true
+    if let Err(error) = env::set_current_dir(expand_home(target)) {
+        eprintln!("cd failed: {error}");
+        Some(false)
+    } else {
+        Some(true)
+    }
 }
 
 fn looks_like_direct_command(input: &str) -> bool {
