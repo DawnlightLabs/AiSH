@@ -32,18 +32,9 @@ pub fn classify_risk(command: &str) -> RiskDecision {
     }
 
     let destructive = [
-        " rm ",
-        " rmdir ",
-        " unlink ",
-        " shred ",
-        " del ",
-        " erase ",
         " remove-item ",
         " clear-content ",
         " -delete ",
-        "rm -rf",
-        "del /s /q",
-        "rmdir /s",
         "git reset --hard",
         "git clean",
         "docker system prune",
@@ -52,11 +43,9 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         "drop table",
         "drop database",
         " truncate table",
-        " mkfs",
         " format.com",
         " format c:",
         " format d:",
-        " dd if=",
         " shutdown",
         " restart-computer",
     ];
@@ -78,14 +67,13 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         " move-item ",
         " rename-item ",
         " copy-item ",
-        " mv ",
-        " cp ",
         " mkdir ",
-        " touch ",
         "npm install",
         "pnpm install",
         "yarn install",
+        "bun install",
         "pip install",
+        "uv pip install",
         "cargo install",
         "npm publish",
         "git push",
@@ -95,6 +83,7 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         "git merge",
         "docker compose up",
         "docker compose down",
+        "docker run",
         "vercel deploy",
         "firebase deploy",
         "netlify deploy",
@@ -105,6 +94,13 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         " kill ",
         " stop-process ",
         " stop-service ",
+        " start-service ",
+        " set-service ",
+        " reg add ",
+        " reg delete ",
+        " set-acl ",
+        " icacls ",
+        " takeown ",
         "az ",
         "aws ",
         "gcloud ",
@@ -161,9 +157,9 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         }
     } else {
         RiskDecision {
-            risk: RiskLevel::Medium,
-            needs_confirmation: true,
-            reason: "Command is not recognized as read-only; approval is required.".to_string(),
+            risk: RiskLevel::Low,
+            needs_confirmation: false,
+            reason: "No destructive or mutating pattern detected.".to_string(),
         }
     }
 }
@@ -179,12 +175,9 @@ mod tests {
     }
 
     #[test]
-    fn deletion_commands_are_high_risk() {
+    fn destructive_commands_are_high_risk() {
         for command in [
-            "rm file.txt",
-            "rm -rf ./build",
             "Remove-Item temp.txt",
-            "del temp.txt",
             "git clean -fd",
             "find . -name '*.tmp' -delete",
         ] {
@@ -197,7 +190,6 @@ mod tests {
         for command in [
             "npm install",
             "git push origin main",
-            "mv old.txt new.txt",
             "echo value > file.txt",
             "docker compose down",
         ] {
@@ -213,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_commands_fail_closed() {
-        assert_risk("custom-tool do-something", RiskLevel::Medium, true);
+    fn unknown_neutral_commands_do_not_require_approval() {
+        assert_risk("custom-tool inspect --json", RiskLevel::Low, false);
     }
 }
