@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { checkCommandRisk, createAiCard } from '../lib/api';
+import { checkCommandRisk, createAiCard, recordCommandLog } from '../lib/api';
 
 export interface TerminalEntry {
   id: string;
@@ -92,6 +92,17 @@ function normalizeCommand(command: string, intent: string) {
   return next.replace(/\s{2,}/g, ' ').trim();
 }
 
+function logCommand(entry: {
+  intent?: string;
+  command?: string;
+  status: string;
+  risk?: string;
+  reason?: string;
+  error?: string;
+}) {
+  void recordCommandLog({ ...entry, surface: 'desktop' }).catch(() => undefined);
+}
+
 export function useAiRun(profileId: string, options: { onLine?: (line: string) => Promise<void> } = {}) {
   const [entries, setEntries] = useState<TerminalEntry[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -103,14 +114,17 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
     setEntries((items) => items.map((item) => item.id === id ? { ...item, ...next } : item));
   }
 
-  async function sendToTerminal(id: string, command: string, risk: string, reason: string) {
+  async function sendToTerminal(id: string, command: string, risk: string, reason: string, intent?: string) {
     if (!options.onLine) {
-      patch(id, { status: 'error', command, risk, reason, error: 'Terminal session is not ready.' });
+      const message = 'Terminal session is not ready.';
+      patch(id, { status: 'error', command, risk, reason, error: message });
+      logCommand({ intent, command, status: 'error', risk, reason, error: message });
       return;
     }
     patch(id, { status: 'running', command, risk, reason, output: 'Running in terminal...' });
     await options.onLine(command);
     patch(id, { status: 'done', command, risk, reason, output: 'Sent to terminal.' });
+    logCommand({ intent, command, status: 'sent_to_terminal', risk, reason });
   }
 
   async function runIntent(intent: string) {
@@ -129,7 +143,12 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
       patch(id, { modelOutput: body, runtime: String(raw?.command_line ?? '') });
       let card: any = null;
       try { card = JSON.parse(body); } catch { card = null; }
-      if (!card) { patch(id, { status: 'error', error: body || 'No valid card returned.' }); return; }
+      if (!card) {
+        const message = body || 'No valid card returned.';
+        patch(id, { status: 'error', error: message });
+        logCommand({ intent: text, status: 'error', error: message });
+        return;
+      }
 
       const command = normalizeCommand(String(card['com' + 'mand'] ?? ''), text);
       const modelRisk = String(card.risk ?? 'medium').toLowerCase();
@@ -138,6 +157,7 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
       if (!command) {
         const message = String(card.fallback_message ?? (reason || 'No action available.'));
         patch(id, { status: 'blocked', output: message, reason });
+        logCommand({ intent: text, status: 'blocked', reason, error: message });
         return;
       }
 
@@ -152,14 +172,16 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
 
       if (localDecision.needs_confirmation || destructive || (risk !== 'low' && !readOnly)) {
         patch(id, { status: 'approval', command, risk, reason: safetyReason, needsApproval: true, output: 'Approval required. Expand Working to approve or cancel.' });
+        logCommand({ intent: text, command, status: 'approval_required', risk, reason: safetyReason });
         return;
       }
 
-      await sendToTerminal(id, command, risk, safetyReason);
+      await sendToTerminal(id, command, risk, safetyReason, text);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       patch(id, { status: 'error', error: message });
+      logCommand({ intent: text, status: 'error', error: message });
     } finally {
       setIsRunning(false);
     }
@@ -168,11 +190,13 @@ export function useAiRun(profileId: string, options: { onLine?: (line: string) =
   async function approveEntry(id: string) {
     const entry = entries.find((item) => item.id === id);
     if (!entry?.command) return;
-    await sendToTerminal(id, entry.command, entry.risk || 'medium', entry.reason || 'Approved by user.');
+    await sendToTerminal(id, entry.command, entry.risk || 'medium', entry.reason || 'Approved by user.', entry.intent);
   }
 
   function cancelEntry(id: string) {
+    const entry = entries.find((item) => item.id === id);
     patch(id, { status: 'blocked', needsApproval: false, output: 'Cancelled.' });
+    logCommand({ intent: entry?.intent, command: entry?.command, status: 'cancelled', risk: entry?.risk, reason: entry?.reason });
   }
 
   function reset() { setEntries([]); setResult(null); setError(''); setLastIntent(''); }
