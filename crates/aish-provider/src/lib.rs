@@ -112,6 +112,13 @@ pub struct ProviderPlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderTraceEvent {
+    pub level: String,
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderSessionCommand {
     pub intent: Option<String>,
     pub command: String,
@@ -161,6 +168,46 @@ impl ProviderSession {
     pub fn clear_context(&mut self) {
         self.command_memory.clear();
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderStatus {
+    pub mode: ProviderInputMode,
+    pub context_mode: ProviderContextMode,
+    pub show_trace: bool,
+    pub session_commands: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderControlAction {
+    SetMode(ProviderInputMode),
+    SetContextMode(ProviderContextMode),
+    SetTrace(bool),
+    ClearContext,
+}
+
+pub fn provider_status(session: &ProviderSession) -> ProviderStatus {
+    ProviderStatus {
+        mode: session.mode.clone(),
+        context_mode: session.context_mode.clone(),
+        show_trace: session.show_trace,
+        session_commands: session.command_memory.len(),
+    }
+}
+
+pub fn apply_provider_control(
+    session: &mut ProviderSession,
+    action: ProviderControlAction,
+) -> ProviderStatus {
+    match action {
+        ProviderControlAction::SetMode(mode) => session.mode = mode,
+        ProviderControlAction::SetContextMode(mode) => session.context_mode = mode,
+        ProviderControlAction::SetTrace(value) => session.show_trace = value,
+        ProviderControlAction::ClearContext => session.clear_context(),
+    }
+
+    provider_status(session)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -393,6 +440,47 @@ pub fn evaluate_generated_command(
         model_output,
         runtime,
         error: None,
+    }
+}
+
+pub fn trace_provider_plan(plan: &ProviderPlan) -> Vec<ProviderTraceEvent> {
+    let mut events = vec![
+        trace_event("info", "mode", describe_provider_mode(&plan.mode)),
+        trace_event("info", "action", &format!("{:?}", plan.action)),
+        trace_event("info", "request", &plan.intent),
+        trace_event("info", "risk", risk_label(&plan.risk)),
+        trace_event("info", "reason", &plan.reason),
+    ];
+
+    if let Some(command) = &plan.command {
+        events.push(trace_event("info", "shell", command));
+    }
+    if let Some(runtime) = &plan.runtime {
+        events.push(trace_event("debug", "runtime", runtime));
+    }
+    if let Some(model_output) = &plan.model_output {
+        events.push(trace_event("debug", "model_card", model_output));
+    }
+    if let Some(error) = &plan.error {
+        events.push(trace_event("error", "error", error));
+    }
+
+    events
+}
+
+fn trace_event(level: &str, key: &str, value: &str) -> ProviderTraceEvent {
+    ProviderTraceEvent {
+        level: level.to_string(),
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+fn risk_label(risk: &RiskLevel) -> &'static str {
+    match risk {
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
     }
 }
 

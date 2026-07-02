@@ -14,6 +14,7 @@ path = "src/main_setup.rs"
 aish-ai = { path = "../../crates/aish-ai" }
 aish-core = { path = "../../crates/aish-core" }
 aish-context = { path = "../../crates/aish-context" }
+aish-completion = { path = "../../crates/aish-completion" }
 aish-provider = { path = "../../crates/aish-provider" }
 aish-safety = { path = "../../crates/aish-safety" }
 aish-logging = { path = "../../crates/aish-logging" }

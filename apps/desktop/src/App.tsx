@@ -151,7 +151,7 @@ export default function App() {
         {appMode === 'ai' && <WorkingPanel entries={ai.entries} showFullReasoning={showFullReasoning} onApprove={ai.approveEntry} onCancel={ai.cancelEntry} />}
         {appMode === 'ai' && <CommandComposer ref={inputRef} cwd={cwd} value={input} disabled={ai.isRunning} onChange={setInput} onSubmit={submitPrompt} />}
       </section>
-      <SettingsDrawer open={settingsOpen} cwd={cwd} profiles={profiles} selectedProfileId={selectedProfileId} showFullReasoning={showFullReasoning} logSettings={logSettings} contextMode={contextMode} onChangeContextMode={setContextMode} onSelectProfile={setSelectedProfileId} onToggleFullReasoning={setShowFullReasoning} onChangeLogSettings={updateLogSettings} onClose={() => setSettingsOpen(false)} />
+      <SettingsDrawer open={settingsOpen} cwd={cwd} profiles={profiles} selectedProfileId={selectedProfileId} showFullReasoning={showFullReasoning} appMode={appMode} logSettings={logSettings} contextMode={contextMode} onChangeAppMode={setAppMode} onChangeContextMode={setContextMode} onClearWorking={ai.reset} onSelectProfile={setSelectedProfileId} onToggleFullReasoning={setShowFullReasoning} onChangeLogSettings={updateLogSettings} onClose={() => setSettingsOpen(false)} />
     </main>
   );
 }

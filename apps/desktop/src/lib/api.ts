@@ -24,6 +24,12 @@ export interface CommandLogEntry {
   surface?: string;
 }
 
+export interface ProviderTraceEvent {
+  level: string;
+  key: string;
+  value: string;
+}
+
 export interface ProviderPlan {
   mode: ProviderInputMode;
   surface: string;

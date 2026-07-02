@@ -5,13 +5,16 @@ interface SettingsDrawerProps {
   cwd: string;
   profiles: ModelProfile[];
   selectedProfileId: string;
+  appMode: 'ai' | 'normal';
   showFullReasoning: boolean;
   logSettings: LogSettings;
   contextMode: ProviderContextMode;
   onSelectProfile: (id: string) => void;
+  onChangeAppMode: (mode: 'ai' | 'normal') => void;
   onToggleFullReasoning: (value: boolean) => void;
   onChangeLogSettings: (settings: LogSettings) => void;
   onChangeContextMode: (mode: ProviderContextMode) => void;
+  onClearWorking: () => void;
   onClose: () => void;
 }
 
@@ -21,7 +24,7 @@ const logPolicyLabels: Record<CommandLogPolicy, string> = {
   all: 'Record all AiSH commands locally',
 };
 
-export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, showFullReasoning, logSettings, contextMode, onSelectProfile, onToggleFullReasoning, onChangeLogSettings, onChangeContextMode, onClose }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, appMode, showFullReasoning, logSettings, contextMode, onSelectProfile, onChangeAppMode, onToggleFullReasoning, onChangeLogSettings, onChangeContextMode, onClearWorking, onClose }: SettingsDrawerProps) {
   if (!open) return null;
 
   function changeLogPolicy(command_log_policy: CommandLogPolicy) {
@@ -42,6 +45,14 @@ export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, showFul
             <span>AI Run mode</span>
           </div>
           <button type="button" onClick={onClose}>×</button>
+        </div>
+        <div className="settings-field">
+          <span>Provider controls</span>
+          <div className="settings-actions">
+            <button type="button" onClick={() => onChangeAppMode('ai')} disabled={appMode === 'ai'}>AI Run</button>
+            <button type="button" onClick={() => onChangeAppMode('normal')} disabled={appMode === 'normal'}>Normal</button>
+            <button type="button" onClick={onClearWorking}>Clear Working</button>
+          </div>
         </div>
         <label className="settings-field">
           <span>Model</span>

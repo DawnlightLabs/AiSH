@@ -1,16 +1,16 @@
 mod logging;
 mod setup;
 
-use aish_ai::{build_command_card_prompt, run_gguf_model, ModelProfile, ModelRunRequest};
+use aish_ai::ModelProfile;
+use aish_completion::demo_suggestions;
 use aish_context::inspect_current_project;
 use aish_core::RiskLevel;
 use aish_provider::{
     build_provider_context, default_model_profile, describe_context_mode, describe_provider_mode,
     parse_context_mode, parse_provider_mode, plan_failed_command_recovery, plan_provider_input,
-    ProviderInputMode, ProviderPlan, ProviderPlanAction, ProviderPlanRequest, ProviderSession,
+    trace_provider_plan, ProviderInputMode, ProviderPlan, ProviderPlanAction, ProviderPlanRequest,
+    ProviderSession,
 };
-use aish_safety::classify_risk;
-use serde::Deserialize;
 use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -18,15 +18,6 @@ use std::process::Command;
 
 const CREATOR: &str = "Dawnlight Labs";
 const COPYRIGHT: &str = "Copyright (c) 2026 Dawnlight Labs. All rights reserved.";
-
-#[derive(Debug, Clone, Deserialize)]
-struct CommandCard {
-    action_type: String,
-    command: Option<String>,
-    risk: Option<String>,
-    reason: Option<String>,
-    fallback_message: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 struct PendingCommand {
@@ -158,6 +149,12 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             println!("creator: {CREATOR}");
             println!("copyright: {COPYRIGHT}");
             println!("mode: {}", describe_provider_mode(&state.mode));
+            println!(
+                "context: {}",
+                describe_context_mode(&state.session.context_mode)
+            );
+            println!("pending_approval: {}", state.pending.is_some());
+            println!("session_commands: {}", state.session.command_memory.len());
             println!("os: {}", env::consts::OS);
             println!("shell: {}", shell_name());
             println!("model: {}", state.profile.label);
@@ -220,6 +217,17 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             },
             _ => println!("usage: /crash-reports on | /crash-reports off"),
         },
+        "/complete" => {
+            let prefix = parts.collect::<Vec<_>>().join(" ");
+            let suggestions = demo_suggestions(&prefix);
+            if suggestions.is_empty() {
+                println!("no completions");
+            } else {
+                for item in suggestions {
+                    println!("{}    {} [{}]", item.command, item.description, item.source);
+                }
+            }
+        }
         "/model" => match (parts.next(), parts.next()) {
             (None, _) => println!("model: {}", state.profile.label),
             (Some("list"), _) => println!("{}", state.profile.label),
@@ -229,10 +237,12 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
         "/reasoning" | "/working" => match parts.next() {
             Some("on") => {
                 state.show_trace = true;
+                state.session.show_trace = true;
                 println!("full working trace: on");
             }
             Some("off") => {
                 state.show_trace = false;
+                state.session.show_trace = false;
                 println!("full working trace: off");
             }
             _ => println!(
@@ -256,6 +266,12 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
                     } else {
                         Some("command exited unsuccessfully")
                     },
+                );
+                state.session.record_command(
+                    pending.intent.as_deref(),
+                    &pending.command,
+                    if ok { "success" } else { "failed" },
+                    Some(&pending.reason),
                 );
             } else {
                 println!("no pending command");
@@ -288,6 +304,7 @@ fn print_help() {
     println!("  /mode ai               treat non-command input as AI Run requests");
     println!("  /ai                    shortcut for /mode ai");
     println!("  /normal                shortcut for /mode normal");
+    println!("  /complete [prefix]     show shared command completions");
     println!("  /model                 show current model");
     println!("  /model list            list enabled models");
     println!("  /status                show provider status");
@@ -312,20 +329,7 @@ fn set_mode(state: &mut ProviderState, mode: ProviderInputMode) {
 
 fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
     if state.show_trace {
-        println!("working: mode: {}", describe_provider_mode(&plan.mode));
-        println!("working: action: {:?}", plan.action);
-        println!("working: request: {}", plan.intent);
-        if let Some(command) = &plan.command {
-            println!("working: shell: {command}");
-        }
-        println!("working: risk: {}", risk_label(&plan.risk));
-        println!("working: reason: {}", plan.reason);
-        if let Some(runtime) = &plan.runtime {
-            println!("working: runtime: {runtime}");
-        }
-        if let Some(model_output) = &plan.model_output {
-            println!("working: model_card: {model_output}");
-        }
+        print_plan_trace(&plan);
     }
 
     match &plan.action {
@@ -416,6 +420,12 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                     Some("command exited unsuccessfully")
                 },
             );
+            state.session.record_command(
+                Some(&plan.intent),
+                command,
+                if ok { "success" } else { "failed" },
+                Some(&plan.reason),
+            );
         }
     }
 }
@@ -425,6 +435,12 @@ fn risk_label(risk: &RiskLevel) -> &'static str {
         RiskLevel::Low => "low",
         RiskLevel::Medium => "medium",
         RiskLevel::High => "high",
+    }
+}
+
+fn print_plan_trace(plan: &ProviderPlan) {
+    for event in trace_provider_plan(plan) {
+        println!("working: {}: {}", event.key, event.value);
     }
 }
 
@@ -447,6 +463,12 @@ fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
         } else {
             Some("command exited unsuccessfully")
         },
+    );
+    state.session.record_command(
+        None,
+        command,
+        if ok { "success" } else { "failed" },
+        Some("User-entered command."),
     );
     if ok {
         return;
@@ -492,152 +514,6 @@ fn looks_like_command_attempt(input: &str) -> bool {
             && first
                 .chars()
                 .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
-}
-
-fn run_ai_request(intent: &str, state: &mut ProviderState) {
-    let prompt = build_command_card_prompt(intent, &serde_json::json!({}));
-    let result = run_gguf_model(ModelRunRequest {
-        profile: state.profile.clone(),
-        prompt,
-    });
-    let Ok(result) = result else {
-        let error = result.err().unwrap_or_else(|| "unknown error".to_string());
-        println!("AiSH model error: {error}");
-        logging::record_command(Some(intent), None, "error", None, None, Some(&error));
-        return;
-    };
-
-    let body = result.output.trim();
-    let Ok(card) = serde_json::from_str::<CommandCard>(body) else {
-        println!("AiSH could not parse a command card.");
-        if state.show_trace {
-            println!("raw: {body}");
-        }
-        logging::record_command(
-            Some(intent),
-            None,
-            "error",
-            None,
-            None,
-            Some("could not parse command card"),
-        );
-        return;
-    };
-
-    if card.action_type == "fallback_message" {
-        let message = card.fallback_message.unwrap_or_else(|| {
-            card.reason
-                .unwrap_or_else(|| "No command available.".to_string())
-        });
-        println!("{message}");
-        logging::record_command(Some(intent), None, "fallback", None, Some(&message), None);
-        return;
-    }
-
-    let Some(command) = card
-        .command
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        println!("AiSH returned no command.");
-        logging::record_command(
-            Some(intent),
-            None,
-            "error",
-            card.risk.as_deref(),
-            card.reason.as_deref(),
-            Some("empty command"),
-        );
-        return;
-    };
-
-    let reason = card
-        .reason
-        .unwrap_or_else(|| "No reason supplied.".to_string());
-
-    if state.show_trace {
-        println!("working: request: {intent}");
-        println!("working: shell: {command}");
-        println!("working: reason: {reason}");
-    }
-
-    approve_or_run(
-        command,
-        Some((card.risk.as_deref().unwrap_or("medium"), &reason)),
-        state,
-        Some(intent),
-    );
-}
-
-fn approve_or_run(
-    command: &str,
-    model_assessment: Option<(&str, &str)>,
-    state: &mut ProviderState,
-    intent: Option<&str>,
-) {
-    let local = classify_risk(command);
-    let local_reason = local.reason.clone();
-    let model_risk = model_assessment.map(|(risk, _)| risk).unwrap_or("low");
-    let risk = combined_risk(&local.risk, model_risk);
-    let needs_confirmation = local.needs_confirmation || risk != "low";
-    let reason = if local.needs_confirmation {
-        local_reason.clone()
-    } else {
-        model_assessment
-            .map(|(_, reason)| reason.to_string())
-            .unwrap_or(local_reason.clone())
-    };
-
-    if state.show_trace {
-        println!("working: risk: {risk}");
-        println!("working: safety: {local_reason}");
-    }
-
-    if needs_confirmation {
-        state.pending = Some(PendingCommand {
-            intent: intent.map(str::to_string),
-            command: command.to_string(),
-            risk: risk.to_string(),
-            reason: reason.clone(),
-        });
-        println!("AiSH needs approval: {risk}");
-        println!("reason: {reason}");
-        println!("command: {command}");
-        println!("type /approve or /cancel");
-        logging::record_command(
-            intent,
-            Some(command),
-            "approval_required",
-            Some(risk),
-            Some(&reason),
-            None,
-        );
-    } else {
-        let ok = run_shell_command(command);
-        logging::record_command(
-            intent,
-            Some(command),
-            if ok { "success" } else { "failed" },
-            Some(risk),
-            Some(&reason),
-            if ok {
-                None
-            } else {
-                Some("command exited unsuccessfully")
-            },
-        );
-    }
-}
-
-fn combined_risk(local: &RiskLevel, model_risk: &str) -> &'static str {
-    if matches!(local, RiskLevel::High) || model_risk.eq_ignore_ascii_case("high") {
-        "high"
-    } else if matches!(local, RiskLevel::Medium) || !model_risk.eq_ignore_ascii_case("low") {
-        "medium"
-    } else {
-        "low"
-    }
 }
 
 fn run_shell_command(command: &str) -> bool {
