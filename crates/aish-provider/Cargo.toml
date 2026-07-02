@@ -8,4 +8,6 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+aish-ai = { path = "../aish-ai" }
 aish-core = { path = "../aish-core" }
+aish-safety = { path = "../aish-safety" }
