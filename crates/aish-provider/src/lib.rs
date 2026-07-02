@@ -271,10 +271,13 @@ pub fn evaluate_generated_command(
 ) -> ProviderPlan {
     let local = classify_risk(command);
     let model = parse_model_risk(model_risk);
-    let risk = combine_risk(&local.risk, &model);
+    let unrecognized_low_risk_gate = local.needs_confirmation && is_unrecognized_read_only_gate(&local.reason);
+    let effective_local_risk = if unrecognized_low_risk_gate { RiskLevel::Low } else { local.risk.clone() };
+    let risk = combine_risk(&effective_local_risk, &model);
     let model_high = matches!(model, RiskLevel::High);
-    let needs_approval = local.needs_confirmation || matches!(local.risk, RiskLevel::High) || model_high;
-    let reason = if local.needs_confirmation || matches!(local.risk, RiskLevel::High) {
+    let local_needs_approval = local.needs_confirmation && !unrecognized_low_risk_gate;
+    let needs_approval = local_needs_approval || matches!(effective_local_risk, RiskLevel::High) || model_high;
+    let reason = if local_needs_approval || matches!(effective_local_risk, RiskLevel::High) {
         local.reason.clone()
     } else {
         model_reason
@@ -330,4 +333,9 @@ fn combine_risk(local: &RiskLevel, model: &RiskLevel) -> RiskLevel {
     } else {
         RiskLevel::Low
     }
+}
+
+fn is_unrecognized_read_only_gate(reason: &str) -> bool {
+    let lower = reason.to_lowercase();
+    lower.contains("not recognized as read-only") || lower.contains("approval is required")
 }
