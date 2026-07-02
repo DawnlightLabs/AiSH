@@ -493,7 +493,7 @@ fn looks_like_command_attempt(input: &str) -> bool {
     let first = words[0].to_lowercase();
     let nlp_verbs = [
         "show", "find", "create", "make", "run", "install", "open", "explain", "what", "why",
-        "how", "can", "please", "list", "tell", "check",
+        "how", "can", "please", "list", "tell", "check", "go", "change", "switch",
     ];
 
     if nlp_verbs.contains(&first.as_str()) {

@@ -221,7 +221,10 @@ fn clean_runtime_text(raw: &str) -> String {
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.contains("llama_") || trimmed.contains("ggml_") || trimmed.contains("print_info:") {
+        if trimmed.contains("llama_")
+            || trimmed.contains("ggml_")
+            || trimmed.contains("print_info:")
+        {
             continue;
         }
         if trimmed.starts_with("You are Ken") {
