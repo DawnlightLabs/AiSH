@@ -49,7 +49,21 @@
     ],
     "windows": {
       "nsis": {
-        "installMode": "both"
+        "installMode": "both",
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    },
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/aish/aish-installer-setup.sh": "../../../scripts/install/aish-installer-setup.sh"
+        }
+      },
+      "rpm": {
+        "postInstallScript": "./scripts/postinstall.sh",
+        "files": {
+          "/usr/share/aish/aish-installer-setup.sh": "../../../scripts/install/aish-installer-setup.sh"
+        }
       }
     }
   }
