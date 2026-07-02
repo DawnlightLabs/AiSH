@@ -33,6 +33,13 @@
     "shortDescription": "AiSH AI-native shell and desktop terminal",
     "longDescription": "AiSH is an AI-native provider shell and desktop terminal from Dawnlight Labs.",
     "category": "DeveloperTool",
+    "externalBin": [
+      "binaries/aish-provider-shell"
+    ],
+    "resources": [
+      "../../../scripts/install/aish-installer-setup.ps1",
+      "../../../scripts/install/aish-installer-setup.sh"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
