@@ -9,7 +9,13 @@ use std::process::Command;
 const DEFAULT_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf?download=true";
 
 pub fn handle_setup_args() {
-    if env::args().any(|arg| arg == "--download-model") {
+    let args = env::args().collect::<Vec<_>>();
+
+    if args.iter().any(|arg| arg == "--setup-non-interactive") {
+        run_setup_non_interactive(true, &args);
+    }
+
+    if args.iter().any(|arg| arg == "--download-model") {
         match download_model_if_missing(&default_model_path()) {
             Ok(()) => std::process::exit(0),
             Err(error) => {
@@ -19,9 +25,129 @@ pub fn handle_setup_args() {
         }
     }
 
-    if env::args().any(|arg| arg == "--setup") {
+    if args.iter().any(|arg| arg == "--setup") {
         run_setup_wizard(true);
     }
+}
+
+fn run_setup_non_interactive(exit_after: bool, args: &[String]) {
+    let install_dir = arg_value(args, "--install-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_install_dir);
+
+    let install_app = !has_flag(args, "--no-app");
+    let model_check = has_flag(args, "--model-check") || !has_flag(args, "--skip-model");
+    let add_to_path = has_flag(args, "--add-path") || !has_flag(args, "--no-add-path");
+    let set_model_env =
+        has_flag(args, "--set-model-path") || !has_flag(args, "--no-set-model-path");
+    let add_windows_terminal =
+        has_flag(args, "--windows-terminal") || !has_flag(args, "--no-windows-terminal");
+    let make_default_terminal = has_flag(args, "--default-terminal");
+    let add_editor_profiles =
+        has_flag(args, "--editor-profiles") || !has_flag(args, "--no-editor-profiles");
+
+    println!("AiSH installer setup");
+    println!("[✓] Shell provider runtime is required");
+    println!(
+        "[{}] Model check / download",
+        if model_check { "✓" } else { " " }
+    );
+    println!("[{}] AiSH desktop app", if install_app { "✓" } else { " " });
+
+    if let Err(error) = fs::create_dir_all(install_dir.join("bin")) {
+        eprintln!("setup failed: could not create install directory: {error}");
+        if exit_after {
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let provider_target = match install_provider_binary(&install_dir) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            eprintln!("setup warning: {error}");
+            None
+        }
+    };
+
+    let log_settings = logging::LogSettings {
+        command_log_policy: logging::CommandLogPolicy::FailedOnly,
+        crash_log_sharing_opt_in: false,
+    };
+    if let Err(error) = logging::write_settings(&log_settings) {
+        eprintln!("setup warning: could not save log settings: {error}");
+    }
+
+    if let Some(provider_path) = provider_target.as_deref() {
+        if add_to_path {
+            if let Err(error) = add_provider_to_path(&install_dir.join("bin")) {
+                eprintln!("setup warning: could not update PATH: {error}");
+            }
+        }
+
+        if set_model_env {
+            if let Err(error) = persist_env_var(
+                "AISH_MODEL_PATH",
+                &default_model_path().display().to_string(),
+            ) {
+                eprintln!("setup warning: could not save AISH_MODEL_PATH: {error}");
+            }
+        }
+
+        if add_windows_terminal {
+            if let Err(error) = add_windows_terminal_profile(provider_path, make_default_terminal) {
+                eprintln!("setup warning: could not update Windows Terminal profile: {error}");
+            }
+        }
+
+        if add_editor_profiles {
+            if let Err(error) = add_editor_terminal_profiles(provider_path) {
+                eprintln!("setup warning: could not update editor terminal profiles: {error}");
+            }
+        }
+    }
+
+    if model_check {
+        let model_path = default_model_path();
+        if let Err(error) = download_model_if_missing(&model_path) {
+            eprintln!("model download failed: {error}");
+            eprintln!("set AISH_MODEL_PATH to an existing GGUF file, or retry setup later.");
+        }
+    }
+
+    println!("setup complete");
+    if exit_after {
+        std::process::exit(0);
+    }
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|arg| arg == flag)
+}
+
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
+}
+
+fn install_provider_binary(install_dir: &Path) -> Result<PathBuf, String> {
+    let name = if cfg!(target_os = "windows") {
+        "aish.exe"
+    } else {
+        "aish"
+    };
+    let target = install_dir.join("bin").join(name);
+    let current = env::current_exe()
+        .map_err(|error| format!("could not locate current provider executable: {error}"))?;
+    fs::copy(&current, &target).map_err(|error| {
+        format!(
+            "could not copy provider shell to {}: {error}",
+            target.display()
+        )
+    })?;
+    println!("installed provider shell: {}", target.display());
+    Ok(target)
 }
 
 pub fn run_setup_wizard(exit_after: bool) {
@@ -71,24 +197,10 @@ pub fn run_setup_wizard(exit_after: bool) {
         return;
     }
 
-    let provider_target = match env::current_exe() {
-        Ok(current) => {
-            let name = if cfg!(target_os = "windows") {
-                "aish.exe"
-            } else {
-                "aish"
-            };
-            let target = install_dir.join("bin").join(name);
-            if let Err(error) = fs::copy(&current, &target) {
-                eprintln!("setup warning: could not copy provider shell: {error}");
-                None
-            } else {
-                println!("installed provider shell: {}", target.display());
-                Some(target)
-            }
-        }
+    let provider_target = match install_provider_binary(&install_dir) {
+        Ok(path) => Some(path),
         Err(error) => {
-            eprintln!("setup warning: could not locate current executable: {error}");
+            eprintln!("setup warning: {error}");
             None
         }
     };
@@ -402,7 +514,16 @@ fn add_editor_terminal_profiles(provider_path: &Path) -> Result<(), String> {
             json = serde_json::json!({});
         }
 
-        json["terminal.integrated.profiles.windows"]["AiSH"] = serde_json::json!({
+        let root = json
+            .as_object_mut()
+            .ok_or_else(|| format!("{} is not a JSON object", settings_path.display()))?;
+        let profiles = root
+            .entry("terminal.integrated.profiles.windows".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !profiles.is_object() {
+            *profiles = serde_json::json!({});
+        }
+        profiles["AiSH"] = serde_json::json!({
             "path": provider_path.display().to_string(),
             "args": [],
             "icon": "terminal"
