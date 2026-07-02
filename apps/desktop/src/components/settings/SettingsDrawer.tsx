@@ -2,7 +2,6 @@ import type { CommandLogPolicy, LogSettings, ModelProfile, ProviderContextMode }
 
 interface SettingsDrawerProps {
   open: boolean;
-  cwd: string;
   profiles: ModelProfile[];
   selectedProfileId: string;
   appMode: 'ai' | 'normal';
@@ -24,7 +23,7 @@ const logPolicyLabels: Record<CommandLogPolicy, string> = {
   all: 'Record all AiSH commands locally',
 };
 
-export function SettingsDrawer({ open, cwd, profiles, selectedProfileId, appMode, showFullReasoning, logSettings, contextMode, onSelectProfile, onChangeAppMode, onToggleFullReasoning, onChangeLogSettings, onChangeContextMode, onClearWorking, onClose }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, profiles, selectedProfileId, appMode, showFullReasoning, logSettings, contextMode, onSelectProfile, onChangeAppMode, onToggleFullReasoning, onChangeLogSettings, onChangeContextMode, onClearWorking, onClose }: SettingsDrawerProps) {
   if (!open) return null;
 
   function changeLogPolicy(command_log_policy: CommandLogPolicy) {

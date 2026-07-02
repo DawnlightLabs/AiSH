@@ -31,8 +31,6 @@ struct PendingCommand {
 struct ProviderState {
     profile: ModelProfile,
     pending: Option<PendingCommand>,
-    show_trace: bool,
-    mode: ProviderInputMode,
     session: ProviderSession,
 }
 
@@ -43,8 +41,6 @@ fn main() {
     let mut state = ProviderState {
         profile: default_profile(),
         pending: None,
-        show_trace: false,
-        mode: ProviderInputMode::AiRun,
         session: ProviderSession::default(),
     };
     setup::ensure_model(&state.profile);
@@ -53,11 +49,11 @@ fn main() {
     println!("{COPYRIGHT}");
     println!(
         "Mode: {}. Type /mode normal, /mode ai, commands, natural language, or /help.",
-        describe_provider_mode(&state.mode)
+        describe_provider_mode(&state.session.mode)
     );
 
     loop {
-        print!("{}> ", prompt_cwd(&state.mode));
+        print!("{}> ", prompt_cwd(&state.session.mode));
         let _ = io::stdout().flush();
 
         let mut input = String::new();
@@ -81,7 +77,7 @@ fn main() {
             continue;
         }
 
-        if state.mode == ProviderInputMode::Normal || looks_like_command_attempt(input) {
+        if state.session.mode == ProviderInputMode::Normal || looks_like_command_attempt(input) {
             run_user_command_or_recover(input, &mut state);
             continue;
         }
@@ -112,7 +108,7 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
         "/ai" => set_mode(state, ProviderInputMode::AiRun),
         "/normal" => set_mode(state, ProviderInputMode::Normal),
         "/mode" => match parts.next() {
-            None => println!("mode: {}", describe_provider_mode(&state.mode)),
+            None => println!("mode: {}", describe_provider_mode(&state.session.mode)),
             Some(value) => match parse_provider_mode(value) {
                 Some(mode) => set_mode(state, mode),
                 None => println!("usage: /mode normal | /mode ai"),
@@ -148,7 +144,7 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             let settings = logging::read_settings();
             println!("creator: {CREATOR}");
             println!("copyright: {COPYRIGHT}");
-            println!("mode: {}", describe_provider_mode(&state.mode));
+            println!("mode: {}", describe_provider_mode(&state.session.mode));
             println!(
                 "context: {}",
                 describe_context_mode(&state.session.context_mode)
@@ -236,18 +232,20 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
         },
         "/reasoning" | "/working" => match parts.next() {
             Some("on") => {
-                state.show_trace = true;
                 state.session.show_trace = true;
                 println!("full working trace: on");
             }
             Some("off") => {
-                state.show_trace = false;
                 state.session.show_trace = false;
                 println!("full working trace: off");
             }
             _ => println!(
                 "full working trace: {}",
-                if state.show_trace { "on" } else { "off" }
+                if state.session.show_trace {
+                    "on"
+                } else {
+                    "off"
+                }
             ),
         },
         "/approve" => {
@@ -321,14 +319,13 @@ fn print_help() {
 }
 
 fn set_mode(state: &mut ProviderState, mode: ProviderInputMode) {
-    state.mode = mode.clone();
     state.session.mode = mode;
     state.pending = None;
-    println!("mode: {}", describe_provider_mode(&state.mode));
+    println!("mode: {}", describe_provider_mode(&state.session.mode));
 }
 
 fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
-    if state.show_trace {
+    if state.session.show_trace {
         print_plan_trace(&plan);
     }
 
