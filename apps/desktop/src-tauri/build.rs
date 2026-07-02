@@ -26,7 +26,11 @@ fn ensure_provider_sidecar_for_tauri_check(base: &Path) {
         return;
     };
 
-    let ext = if target.contains("windows") { ".exe" } else { "" };
+    let ext = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
     let sidecar_dir = base.join("binaries");
     let sidecar = sidecar_dir.join(format!("aish-provider-shell-{target}{ext}"));
     if sidecar.exists() {
@@ -38,10 +42,15 @@ fn ensure_provider_sidecar_for_tauri_check(base: &Path) {
         .and_then(Path::parent)
         .and_then(Path::parent)
         .unwrap_or(base);
-    let release_provider = repo_root
-        .join("target")
-        .join("release")
-        .join(if target.contains("windows") { "aish.exe" } else { "aish" });
+    let release_provider =
+        repo_root
+            .join("target")
+            .join("release")
+            .join(if target.contains("windows") {
+                "aish.exe"
+            } else {
+                "aish"
+            });
 
     fs::create_dir_all(&sidecar_dir).expect("failed to create sidecar directory");
     if release_provider.exists() {

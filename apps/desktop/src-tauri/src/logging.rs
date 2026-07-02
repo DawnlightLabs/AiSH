@@ -1,4 +1,4 @@
-pub use aish_logging::{CommandLogEntry, CommandLogPolicy, LogSettings};
+pub use aish_logging::{CommandLogEntry, LogSettings};
 
 #[tauri::command]
 pub fn get_log_settings() -> Result<LogSettings, String> {
