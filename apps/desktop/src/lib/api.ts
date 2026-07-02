@@ -5,6 +5,8 @@ export type ModelProfile = Record<string, unknown>;
 export type ModelRunResult = Record<string, unknown>;
 export type BackendAppState = Record<string, unknown>;
 export type CommandLogPolicy = 'off' | 'failed_only' | 'all';
+export type ProviderInputMode = 'normal' | 'ai_run';
+export type ProviderPlanAction = 'shell_command' | 'approval_required' | 'fallback' | 'error' | 'noop';
 
 export interface LogSettings {
   command_log_policy: CommandLogPolicy;
@@ -21,6 +23,21 @@ export interface CommandLogEntry {
   surface?: string;
 }
 
+export interface ProviderPlan {
+  mode: ProviderInputMode;
+  surface: string;
+  action: ProviderPlanAction;
+  intent: string;
+  command?: string | null;
+  risk: 'low' | 'medium' | 'high';
+  needs_approval: boolean;
+  reason: string;
+  fallback_message?: string | null;
+  model_output?: string | null;
+  runtime?: string | null;
+  error?: string | null;
+}
+
 export function backendStatus() { return invoke<string>('backend_status'); }
 export function getAppState() { return invoke<BackendAppState>('get_app_state'); }
 export function inspectProject() { return invoke<Record<string, unknown>>('inspect_project'); }
@@ -30,6 +47,7 @@ export function executeShellCommand(command: string, allowMediumRisk = false) { 
 export function listModelProfiles() { return invoke<ModelProfile[]>('list_model_profiles'); }
 export function saveModelProfiles(profiles: ModelProfile[]) { return invoke<ModelProfile[]>('save_model_profiles', { profiles }); }
 export function createAiCard(profileId: string, intent: string) { return invoke<ModelRunResult>('create_ai_card', { profileId, intent }); }
+export function providerPlan(profileId: string, input: string, mode: ProviderInputMode = 'ai_run') { return invoke<ProviderPlan>('provider_plan', { profileId, input, mode }); }
 export function getLogSettings() { return invoke<LogSettings>('get_log_settings'); }
 export function saveLogSettings(settings: LogSettings) { return invoke<LogSettings>('save_log_settings', { settings }); }
 export function recordCommandLog(entry: CommandLogEntry) { return invoke<void>('record_command_log', { entry }); }
