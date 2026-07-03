@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support guide
+    url: https://github.com/amaansyed27/aish/blob/main/SUPPORT.md
+    about: Read this before opening a support issue.
