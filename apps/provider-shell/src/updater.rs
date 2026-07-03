@@ -1,11 +1,12 @@
 use std::env;
+use std::fs::{self, File};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/DawnlightLabs/AiSH/releases/latest";
-const WINDOWS_INSTALLER_URL: &str = "https://aish.dawnlightlabs.com/install.ps1";
-const UNIX_INSTALLER_URL: &str = "https://aish.dawnlightlabs.com/install";
+const RELEASE_DOWNLOAD_BASE: &str = "https://github.com/DawnlightLabs/AiSH/releases/download";
 
 #[derive(Debug, Clone)]
 struct ReleaseInfo {
@@ -121,49 +122,145 @@ fn fetch_latest_release() -> Result<ReleaseInfo, String> {
 }
 
 fn install_release(tag: &str) -> Result<bool, String> {
+    let asset = platform_asset()?;
+    let url = format!("{RELEASE_DOWNLOAD_BASE}/{tag}/{asset}");
+    let work_dir = env::temp_dir().join(format!("aish-update-{}", sanitize_tag(tag)));
+    let extract_dir = work_dir.join("extract");
+    let archive_path = work_dir.join(asset);
+
+    if work_dir.exists() {
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+    fs::create_dir_all(&extract_dir).map_err(|error| error.to_string())?;
+
+    println!("downloading {url}");
+    download_to_file(&url, &archive_path)?;
+    extract_archive(asset, &archive_path, &extract_dir)?;
+
+    let executable_name = if env::consts::OS == "windows" {
+        "aish.exe"
+    } else {
+        "aish"
+    };
+    let downloaded = find_file(&extract_dir, executable_name)
+        .ok_or_else(|| format!("release archive did not contain {executable_name}"))?;
+    let current = env::current_exe().map_err(|error| error.to_string())?;
+
     if env::consts::OS == "windows" {
-        start_windows_update(tag)?;
-        println!("AiSH update started in a detached PowerShell process.");
-        println!("This provider shell will exit so Windows can replace aish.exe.");
+        let replacement = work_dir.join("aish-update.exe");
+        fs::copy(&downloaded, &replacement).map_err(|error| error.to_string())?;
+        start_windows_replace(&replacement, &current)?;
+        println!("AiSH update prepared. This shell will exit so Windows can replace aish.exe.");
         return Ok(true);
     }
 
-    run_unix_update(tag)?;
-    println!("update complete. Restart AiSH to use the new binary.");
+    let replacement = work_dir.join("aish-update");
+    fs::copy(&downloaded, &replacement).map_err(|error| error.to_string())?;
+    make_executable(&replacement)?;
+    fs::rename(&replacement, &current).map_err(|error| {
+        format!(
+            "failed to replace {} with update: {error}",
+            current.display()
+        )
+    })?;
+
+    println!("update complete. Restart AiSH to use {tag}.");
     Ok(false)
 }
 
-fn start_windows_update(tag: &str) -> Result<(), String> {
-    let tag = tag.replace(''', "''");
-    let command = format!(
-        "$ErrorActionPreference = 'Stop'; \
-         Start-Sleep -Seconds 1; \
-         $script = irm {WINDOWS_INSTALLER_URL}; \
-         & ([scriptblock]::Create($script)) -Headless -SkipModel -Version '{tag}'"
-    );
+fn platform_asset() -> Result<&'static str, String> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("windows", "x86_64") => Ok("aish-windows-x64.zip"),
+        ("windows", "aarch64") => Ok("aish-windows-arm64.zip"),
+        ("macos", "aarch64") => Ok("aish-macos-arm64.tar.gz"),
+        ("linux", "x86_64") => Ok("aish-linux-x64.tar.gz"),
+        ("linux", "aarch64") => Ok("aish-linux-arm64.tar.gz"),
+        (os, arch) => Err(format!("updates are not available for {os}-{arch}")),
+    }
+}
 
-    Command::new("powershell.exe")
-        .args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &command])
-        .spawn()
-        .map_err(|error| format!("failed to start PowerShell updater: {error}"))?;
-
+fn download_to_file(url: &str, path: &Path) -> Result<(), String> {
+    let response = ureq::get(url)
+        .set("User-Agent", concat!("AiSH/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(60))
+        .call()
+        .map_err(|error| error.to_string())?;
+    let mut reader = response.into_reader();
+    let mut file = File::create(path).map_err(|error| error.to_string())?;
+    io::copy(&mut reader, &mut file).map_err(|error| error.to_string())?;
+    file.flush().map_err(|error| error.to_string())?;
     Ok(())
 }
 
-fn run_unix_update(tag: &str) -> Result<(), String> {
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let status = Command::new(shell)
-        .env("AISH_VERSION", tag)
-        .env("AISH_HEADLESS", "1")
-        .env("AISH_SKIP_MODEL", "1")
-        .args(["-lc", &format!("curl -fsSL {UNIX_INSTALLER_URL} | bash")])
-        .status()
-        .map_err(|error| format!("failed to start Unix updater: {error}"))?;
+fn extract_archive(asset: &str, archive_path: &Path, extract_dir: &Path) -> Result<(), String> {
+    let status = if asset.ends_with(".zip") {
+        Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
+                &archive_path.display().to_string(),
+                &extract_dir.display().to_string(),
+            ])
+            .status()
+    } else {
+        Command::new("tar")
+            .args([
+                "-xzf",
+                &archive_path.display().to_string(),
+                "-C",
+                &extract_dir.display().to_string(),
+            ])
+            .status()
+    }
+    .map_err(|error| error.to_string())?;
 
     if !status.success() {
-        return Err(format!("installer exited with status {status}"));
+        return Err(format!("failed to extract {asset}"));
     }
+    Ok(())
+}
 
+fn start_windows_replace(replacement: &Path, current: &Path) -> Result<(), String> {
+    let command = format!(
+        "timeout /t 1 /nobreak > nul && copy /Y \"{}\" \"{}\" > nul",
+        replacement.display(),
+        current.display()
+    );
+    Command::new("cmd.exe")
+        .args(["/C", "start", "AiSH Updater", "/MIN", "cmd.exe", "/C", &command])
+        .spawn()
+        .map_err(|error| format!("failed to start Windows replacement process: {error}"))?;
+    Ok(())
+}
+
+fn find_file(root: &Path, filename: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(|value| value.to_str()) == Some(filename) {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, filename) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn make_executable(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
@@ -183,6 +280,12 @@ fn prompt_yes_no(prompt: &str, default_yes: bool) -> bool {
         "n" | "no" => false,
         _ => default_yes,
     }
+}
+
+fn sanitize_tag(tag: &str) -> String {
+    tag.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' { ch } else { '_' })
+        .collect()
 }
 
 fn normalize_version(version: &str) -> String {
