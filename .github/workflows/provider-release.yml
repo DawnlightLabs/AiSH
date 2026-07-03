@@ -37,9 +37,40 @@ env:
   PRERELEASE: ${{ inputs.prerelease || 'false' }}
 
 jobs:
+  release:
+    name: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure GitHub release exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+            exit 0
+          fi
+
+          release_flags=(--title "AiSH $RELEASE_TAG" --generate-notes)
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_flags+=(--prerelease)
+          fi
+
+          if [[ "$MAKE_LATEST" == "true" ]]; then
+            release_flags+=(--latest)
+          else
+            release_flags+=(--latest=false)
+          fi
+
+          gh release create "$RELEASE_TAG" "${release_flags[@]}"
+
   build:
     name: build-${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    needs: release
     strategy:
       fail-fast: false
       matrix:
@@ -52,10 +83,8 @@ jobs:
             os: windows-11-arm
             artifact: aish-windows-arm64.zip
             bin: target/release/aish.exe
-          - name: macos-x64
-            os: macos-13
-            artifact: aish-macos-x64.tar.gz
-            bin: target/release/aish
+          # GitHub-hosted Intel macOS runners are no longer reliably available.
+          # Keep only Apple Silicon macOS release builds until an x64 self-hosted runner is added.
           - name: macos-arm64
             os: macos-14
             artifact: aish-macos-arm64.tar.gz
@@ -70,7 +99,7 @@ jobs:
             bin: target/release/aish
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -108,38 +137,30 @@ jobs:
         run: |
           shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
 
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: AiSH ${{ env.RELEASE_TAG }}
-          make_latest: ${{ env.MAKE_LATEST }}
-          prerelease: ${{ env.PRERELEASE }}
-          generate_release_notes: true
-          files: |
-            ${{ matrix.artifact }}
-            ${{ matrix.artifact }}.sha256
+      - name: Upload release assets
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "${{ matrix.artifact }}" \
+            "${{ matrix.artifact }}.sha256" \
+            --clobber
 
   scripts:
     name: publish-install-scripts
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Publish install scripts
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: AiSH ${{ env.RELEASE_TAG }}
-          make_latest: ${{ env.MAKE_LATEST }}
-          prerelease: ${{ env.PRERELEASE }}
-          generate_release_notes: true
-          files: |
-            apps/site/public/install
-            apps/site/public/install.sh
-            apps/site/public/install.ps1
+      - name: Upload install scripts
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            apps/site/public/install \
+            apps/site/public/install.sh \
+            apps/site/public/install.ps1 \
+            --clobber
