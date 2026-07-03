@@ -28,20 +28,22 @@ const OS_COMMANDS = {
 };
 
 const FEATURES = [
-  ['01', 'Natural-language commands', 'Describe what you want to do and let AiSH translate the intent into practical shell actions.'],
-  ['02', 'Provider-shell first', 'Mainline AiSH is now a native command-line provider, without the archived desktop wrapper.'],
+  ['01', 'Natural-language commands', 'Describe what you want to do and let AiSH translate intent into practical shell actions.'],
+  ['02', 'Provider-shell first', 'Mainline AiSH is a native command-line provider, without the archived desktop wrapper.'],
   ['03', 'Risk-gated execution', 'Read-only commands can run quickly. Mutating or destructive commands wait for approval.'],
 ];
 
 function useLenisScroll() {
   useEffect(() => {
     const lenis = new Lenis({
-      duration: 1.05,
+      duration: 1.12,
       easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
       smoothWheel: true,
-      wheelMultiplier: 0.9,
+      wheelMultiplier: 0.82,
+      touchMultiplier: 1.15,
     });
 
+    window.__aishLenis = lenis;
     let frame = 0;
     function raf(time) {
       lenis.raf(time);
@@ -51,12 +53,13 @@ function useLenisScroll() {
     frame = requestAnimationFrame(raf);
     return () => {
       cancelAnimationFrame(frame);
+      delete window.__aishLenis;
       lenis.destroy();
     };
   }, []);
 }
 
-function useRevealAnimations() {
+function useRevealAnimations(page) {
   useEffect(() => {
     const nodes = Array.from(document.querySelectorAll('.reveal'));
     const observer = new IntersectionObserver(
@@ -68,19 +71,63 @@ function useRevealAnimations() {
           }
         }
       },
-      { threshold: 0.16, rootMargin: '0px 0px -8% 0px' },
+      { threshold: 0.14, rootMargin: '0px 0px -10% 0px' },
     );
 
-    nodes.forEach((node) => observer.observe(node));
+    nodes.forEach((node, index) => {
+      node.style.setProperty('--reveal-delay', `${Math.min(index * 55, 330)}ms`);
+      observer.observe(node);
+    });
     return () => observer.disconnect();
+  }, [page]);
+}
+
+function useClientRoute() {
+  const getPage = () => (window.location.pathname.startsWith('/downloads') ? 'downloads' : 'home');
+  const [page, setPage] = useState(getPage);
+
+  useEffect(() => {
+    const onPopState = () => setPage(getPage());
+    const onClick = (event) => {
+      const anchor = event.target.closest('a[href]');
+      if (!anchor) return;
+
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      if (url.pathname !== '/' && url.pathname !== '/downloads/') return;
+
+      event.preventDefault();
+      const next = url.pathname === '/downloads/' ? 'downloads' : 'home';
+      if (window.location.pathname !== url.pathname || window.location.hash !== url.hash) {
+        window.history.pushState({}, '', `${url.pathname}${url.hash}`);
+      }
+      setPage(next);
+
+      requestAnimationFrame(() => {
+        if (url.hash) {
+          window.__aishLenis?.scrollTo(url.hash, { offset: -76 });
+        } else {
+          window.__aishLenis?.scrollTo(0, { immediate: false });
+        }
+      });
+    };
+
+    window.addEventListener('popstate', onPopState);
+    document.addEventListener('click', onClick);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      document.removeEventListener('click', onClick);
+    };
   }, []);
+
+  return page;
 }
 
 function LogoMark({ className = 'brand-mark', variant = 'icon' }) {
   const src = variant === 'full'
-    ? '/brand/aish-full-horizontal-white.svg'
-    : '/brand/aish-icon-white.svg';
-  const alt = variant === 'full' ? 'AiSH wordmark' : 'AiSH logo';
+    ? '/brand/aish-full-horizontal-graphite.svg'
+    : '/brand/aish-icon-black.svg';
+  const alt = variant === 'full' ? 'AiSH full lockup' : 'AiSH logo';
   return <img className={className} src={src} alt={alt} draggable="false" />;
 }
 
@@ -108,7 +155,7 @@ function Hero() {
   return (
     <section className="hero" id="top">
       <div className="container hero-grid">
-        <div className="reveal">
+        <div className="hero-text reveal">
           <div className="eyebrow"><span className="eyebrow-dot" />AI-native shell for every platform</div>
           <h1>Think it.<br />Run it.</h1>
           <p className="hero-copy">AiSH turns natural-language intent into precise shell workflows. Built for developers, operators, and security professionals who want a faster, more intelligent command line.</p>
@@ -118,11 +165,8 @@ function Hero() {
           </div>
         </div>
         <div className="logo-card reveal" aria-label="AiSH logo showcase">
-          <div className="hero-logo">
-            <LogoMark className="hero-logo-mark" />
-            <div className="hero-logo-title">AiSH</div>
-            <div className="hero-logo-subtitle">Artificially Intelligent Shell</div>
-          </div>
+          <div className="logo-orbit" aria-hidden="true" />
+          <LogoMark className="hero-logo-lockup" variant="full" />
         </div>
       </div>
     </section>
@@ -136,7 +180,7 @@ function OsIcon({ os }) {
   if (os === 'macos') {
     return <svg className="os-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17.1 12.7c0-2.9 2.4-4.3 2.5-4.4-1.4-2-3.5-2.3-4.2-2.3-1.8-.2-3.5 1.1-4.4 1.1-.9 0-2.3-1.1-3.8-1-1.9 0-3.7 1.1-4.7 2.8-2 3.5-.5 8.7 1.4 11.5.9 1.4 2 2.9 3.5 2.8 1.4-.1 1.9-.9 3.6-.9 1.7 0 2.1.9 3.6.9 1.5 0 2.4-1.4 3.4-2.8 1.1-1.6 1.5-3.1 1.6-3.2-.1 0-2.5-1-2.5-4.5ZM14.2 4.1c.8-1 1.4-2.4 1.2-3.8-1.2.1-2.7.8-3.6 1.8-.8.9-1.5 2.3-1.3 3.7 1.4.1 2.8-.7 3.7-1.7Z" /></svg>;
   }
-  return <svg className="os-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c-2.8 0-4.6 2.5-4.6 5.7 0 1.1.2 2.1.6 3-.8 1.2-1.4 2.8-1.4 4.4 0 2.1.9 3.8 2.2 4.8.7.6 1.7 1 3.2 1 1.5 0 2.5-.4 3.2-1 1.3-1 2.2-2.7 2.2-4.8 0-1.6-.6-3.2-1.4-4.4.4-.9.6-1.9.6-3C16.6 4.5 14.8 2 12 2Zm-1.8 5.1c-.5 0-.9-.5-.9-1.1s.4-1.1.9-1.1.9.5.9 1.1-.4 1.1-.9 1.1Zm3.6 0c-.5 0-.9-.5-.9-1.1s.4-1.1.9-1.1.9.5.9 1.1-.4 1.1-.9 1.1Z" /></svg>;
+  return <svg className="os-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c-2.8 0-4.6 2.5-4.6 5.7 0 1.1.2 2.1.6 3-.8 1.2-1.4 2.8-1.4 4.4 0 2.1.9 3.8 2.2 4.8.7.6 1.7 1 3.2 1 1.5 0 2.5-.4 3.2-1 1.3-1 2.7-2.7 2.7-4.8 0-1.6-.6-3.2-1.4-4.4.4-.9.6-1.9.6-3C16.6 4.5 14.8 2 12 2Zm-1.8 5.1c-.5 0-.9-.5-.9-1.1s.4-1.1.9-1.1.9.5.9 1.1-.4 1.1-.9 1.1Zm3.6 0c-.5 0-.9-.5-.9-1.1s.4-1.1.9-1.1.9.5.9 1.1-.4 1.1-.9 1.1Z" /></svg>;
 }
 
 function detectPreferredOs() {
@@ -170,6 +214,7 @@ function InstallTabs() {
     <section className="install" id="install">
       <div className="container">
         <div className="section-heading reveal">
+          <p className="section-kicker">Installation</p>
           <h2>One command. Ready to run.</h2>
           <p>Choose your operating system, copy the installer command, and launch AiSH from your terminal.</p>
         </div>
@@ -279,12 +324,15 @@ function Footer() {
 
 export default function App() {
   useLenisScroll();
-  useRevealAnimations();
-  const page = window.location.pathname.startsWith('/downloads') ? 'downloads' : 'home';
+  const page = useClientRoute();
+  useRevealAnimations(page);
+
   return (
     <>
       <Nav />
-      {page === 'downloads' ? <Downloads /> : <Home />}
+      <div className="page-shell" key={page}>
+        {page === 'downloads' ? <Downloads /> : <Home />}
+      </div>
       <Footer />
     </>
   );
