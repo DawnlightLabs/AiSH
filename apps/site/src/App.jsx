@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import Lenis from 'lenis';
 
 const GITHUB_URL = 'https://github.com/DawnlightLabs/AiSH';
 const RELEASE_URL = `${GITHUB_URL}/releases/latest`;
@@ -27,10 +28,50 @@ const OS_COMMANDS = {
 };
 
 const FEATURES = [
-  ['Plain shell workflow', 'Type normally, ask when needed, and keep the terminal as the main interface.'],
-  ['Provider shell builds', 'Install the native provider shell directly from GitHub release assets.'],
-  ['Approval before change', 'Read-only commands can move quickly. Mutating commands require explicit approval.'],
+  ['01', 'Plain shell workflow', 'Type normally, ask when needed, and keep the terminal as the main interface.'],
+  ['02', 'Provider shell builds', 'Install the native provider shell directly from GitHub release assets.'],
+  ['03', 'Approval before change', 'Read-only commands can move quickly. Mutating commands require explicit approval.'],
 ];
+
+function prefersReducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function getScrollDriver() {
+  return window.__aishLenis || null;
+}
+
+function useLenisScroll() {
+  useEffect(() => {
+    if (prefersReducedMotion()) return undefined;
+
+    const lenis = new Lenis({
+      duration: 1.16,
+      easing: (t) => Math.min(1, 1.001 - 2 ** (-10 * t)),
+      orientation: 'vertical',
+      gestureOrientation: 'vertical',
+      smoothWheel: true,
+      wheelMultiplier: 0.86,
+      touchMultiplier: 1.15,
+    });
+
+    window.__aishLenis = lenis;
+    let frameId = 0;
+
+    function raf(time) {
+      lenis.raf(time);
+      frameId = requestAnimationFrame(raf);
+    }
+
+    frameId = requestAnimationFrame(raf);
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      lenis.destroy();
+      if (window.__aishLenis === lenis) delete window.__aishLenis;
+    };
+  }, []);
+}
 
 function useClientRoute() {
   const getPage = () => (window.location.pathname.startsWith('/downloads') ? 'downloads' : 'home');
@@ -54,8 +95,12 @@ function useClientRoute() {
       setPage(next);
 
       requestAnimationFrame(() => {
-        if (url.hash) {
-          document.querySelector(url.hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const lenis = getScrollDriver();
+        const target = url.hash ? document.querySelector(url.hash) : 0;
+        if (lenis) {
+          lenis.scrollTo(target || 0, { offset: -18, duration: 1.05 });
+        } else if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
         } else {
           window.scrollTo({ top: 0, behavior: 'smooth' });
         }
@@ -78,7 +123,7 @@ function useRevealOnScroll(page) {
     const elements = Array.from(document.querySelectorAll('.reveal'));
     if (!elements.length) return undefined;
 
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !('IntersectionObserver' in window)) {
+    if (prefersReducedMotion() || !('IntersectionObserver' in window)) {
       elements.forEach((element) => element.classList.add('is-visible'));
       return undefined;
     }
@@ -101,6 +146,36 @@ function useRevealOnScroll(page) {
     });
 
     return () => observer.disconnect();
+  }, [page]);
+}
+
+function useFeatureRail(page) {
+  useEffect(() => {
+    const sections = Array.from(document.querySelectorAll('.features-cinema'));
+    if (!sections.length || prefersReducedMotion()) return undefined;
+
+    let frameId = 0;
+
+    function update() {
+      sections.forEach((section) => {
+        const track = section.querySelector('.feature-rail-inner');
+        const windowEl = section.querySelector('.feature-rail-window');
+        if (!track || !windowEl) return;
+
+        const rect = section.getBoundingClientRect();
+        const travel = Math.max(1, rect.height - window.innerHeight);
+        const progress = Math.min(1, Math.max(0, -rect.top / travel));
+        const maxShift = Math.max(0, track.scrollWidth - windowEl.clientWidth);
+
+        section.style.setProperty('--feature-progress', progress.toFixed(4));
+        section.style.setProperty('--feature-shift', `${Math.round(-maxShift * progress)}px`);
+      });
+
+      frameId = requestAnimationFrame(update);
+    }
+
+    update();
+    return () => cancelAnimationFrame(frameId);
   }, [page]);
 }
 
@@ -216,16 +291,26 @@ function InstallTabs() {
   );
 }
 
-function FeatureGrid() {
+function FeatureCarousel() {
   return (
-    <section className="features" id="features">
-      <div className="container feature-grid">
-        {FEATURES.map(([title, text]) => (
-          <article className="feature-card reveal" key={title}>
-            <h3>{title}</h3>
-            <p>{text}</p>
-          </article>
-        ))}
+    <section className="features-cinema" id="features" aria-label="AiSH workflow features">
+      <div className="container features-pin reveal">
+        <div className="features-copy">
+          <p className="section-kicker">Workflow</p>
+          <h2>Built like a shell, not a dashboard.</h2>
+          <p>Scroll through the operating model: stay native, install the provider, approve anything that changes state.</p>
+        </div>
+        <div className="feature-rail-window">
+          <div className="feature-rail-inner">
+            {FEATURES.map(([number, title, text], index) => (
+              <article className="feature-card feature-slide" style={{ '--card-index': index }} key={title}>
+                <span className="feature-number">{number}</span>
+                <h3>{title}</h3>
+                <p>{text}</p>
+              </article>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -269,7 +354,7 @@ function Home() {
     <main>
       <Hero />
       <InstallTabs />
-      <FeatureGrid />
+      <FeatureCarousel />
       <Cta />
     </main>
   );
@@ -283,7 +368,7 @@ function Footer() {
       <div className="container footer-shell reveal">
         <div className="footer-word" aria-label="AiSH"><span>AiSH</span></div>
         <div className="footer-bottom">
-          <span>© {year} Dawnlight Labs</span>
+          <span>© {year} <span className="footer-dawnlight">Dawnlight Labs</span></span>
           <span>AiSH — Artificially Intelligent Shell</span>
         </div>
       </div>
@@ -293,7 +378,9 @@ function Footer() {
 
 export default function App() {
   const page = useClientRoute();
+  useLenisScroll();
   useRevealOnScroll(page);
+  useFeatureRail(page);
 
   return (
     <>
