@@ -39,12 +39,12 @@ env:
 jobs:
   release:
     name: prepare-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Ensure GitHub release exists
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -84,14 +84,12 @@ jobs:
             os: windows-11-arm
             artifact: aish-windows-arm64.zip
             bin: target/release/aish.exe
-          # GitHub-hosted Intel macOS runners are no longer reliably available.
-          # Keep only Apple Silicon macOS release builds until an x64 self-hosted runner is added.
           - name: macos-arm64
             os: macos-14
             artifact: aish-macos-arm64.tar.gz
             bin: target/release/aish
           - name: linux-x64
-            os: ubuntu-latest
+            os: ubuntu-22.04
             artifact: aish-linux-x64.tar.gz
             bin: target/release/aish
           - name: linux-arm64
@@ -141,7 +139,7 @@ jobs:
       - name: Upload release assets
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           gh release upload "$RELEASE_TAG" \
@@ -152,7 +150,7 @@ jobs:
 
   scripts:
     name: publish-install-scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: build
     steps:
       - uses: actions/checkout@v5
@@ -160,7 +158,7 @@ jobs:
       - name: Upload install scripts
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           gh release upload "$RELEASE_TAG" \
