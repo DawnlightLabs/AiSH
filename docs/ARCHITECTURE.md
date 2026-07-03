@@ -1,175 +1,73 @@
 # AiSH Architecture
 
-AiSH has one shared local intelligence layer and two user-facing surfaces.
+AiSH is an AI-native provider shell from Dawnlight Labs. The current `main` branch focuses on the provider shell, context engine, CLI knowledge layer, approval gates, and optional local Ken model support.
+
+The old Tauri desktop app is archived on the `app-provider-archive` branch and is not the active architecture for `main`.
 
 ```text
-Surfaces:
-  - standalone desktop app
-  - shell/provider integrations
-
-Shared local layer:
-  - context/project inspection engine
-  - CLI knowledge layer
-  - completion engine
-  - history store
-  - safety classifier
-  - AI command-card runtime
-```
-
-## High-Level System
-
-```text
-User input
-  -> surface adapter
-  -> mode router
-  -> project/context inspection
-  -> CLI knowledge retrieval when needed
-  -> candidate generator / Ken runtime planner
-  -> card validator
+User intent
+  -> AiSH provider shell
+  -> context engine
+  -> CLI knowledge layer
+  -> planner / optional local Ken model
+  -> command card
   -> safety classifier
-  -> suggestion/result renderer
-  -> user accepts OR AI Run low-risk auto-run
-  -> shell executes
-  -> command trace + event logger
+  -> approval gate
+  -> real terminal execution
 ```
 
-## Surfaces
+## Goals
 
-### Desktop App
+- Keep users inside real terminal workflows.
+- Convert natural-language intent into shell-aware command plans.
+- Preserve explicit approval before destructive or system-impacting actions.
+- Support Windows, macOS, and Linux.
+- Keep local-first operation possible through model-path configuration.
+- Keep installers and shell-profile changes readable and reversible.
 
-The app owns the UI and the shell session.
+## Major areas
 
-```text
-React/Tauri UI
-  -> Rust commands/events
-  -> PTY session
-  -> selected shell
-```
+### Provider shell
+
+The provider shell is the main runtime. It should stay predictable, fast to start, and easy to install globally.
 
 Responsibilities:
 
-```text
-- render terminal
-- manage tabs/panes
-- capture input line
-- render suggestions
-- render cards
-- render AI Run result-first view
-- render Working / Command Trace details
-- expose settings/context/cache UI
-- host local service if needed
-```
+- Accept normal shell workflows and AiSH-assisted flows.
+- Build command plans from user intent.
+- Surface previews and approval prompts.
+- Execute through the user's real platform shell where appropriate.
+- Support profile setup for Windows Terminal, VS Code-compatible terminals, and Unix shells where implemented.
 
-### Provider Layer
+### Context engine
 
-The provider layer runs inside or near existing shells.
-
-```text
-PowerShell/Zsh/Bash/Fish provider
-  -> AiSH local service/protocol
-  -> completion candidates / AI requests
-  -> shell-native completion UI when possible
-```
+The context layer provides shell-relevant information without collecting unnecessary user data.
 
 Responsibilities:
 
-```text
-- collect shell context
-- request candidates
-- record accept/reject events
-- trigger AI Suggest/Run explicitly
-- expose mode/context/cache controls
-- avoid replacing the shell UI
-```
+- OS and shell detection.
+- Current working directory context.
+- Project type detection.
+- Package manager and script detection.
+- Git branch and working-tree context.
+- Local model path configuration.
+- Installed CLI availability.
 
-## Core Crates
+### CLI knowledge layer
 
-```text
-crates/aish-core
-  shared types, config, cards, mode router
+The CLI knowledge layer gives the planner compact tool context for common developer commands.
 
-crates/aish-pty
-  PTY sessions, shell process management, resize/input/output
+Target areas include:
 
-crates/aish-context
-  cwd/project/git/package/docker/python/cargo context detection
+- package managers: npm, pnpm, yarn, bun
+- version control: git
+- containers: docker, docker compose
+- cloud/deploy CLIs: vercel, firebase, netlify, wrangler, AWS, gcloud, az
+- language tools: cargo, dotnet, go, Java/Maven/Gradle, Python/pip/uv
 
-crates/aish-history
-  SQLite command events, frequency/recency indexes, compact recent summaries
+### Planner and cards
 
-crates/aish-completion
-  deterministic candidate generation, scoring hooks
-
-crates/aish-cli-knowledge
-  CLI registry, local docs cache, safe live help fallback
-
-crates/aish-ai
-  Ken/runtime planner bridge, command-card parsing, AI Suggest/AI Run orchestration
-
-crates/aish-safety
-  risk classification, confirmation policy, destructive pattern rules
-
-crates/aish-provider
-  provider protocol shared by PowerShell/Bash/Zsh/Fish/cmd integrations
-```
-
-## Provider Protocol
-
-Provider requests should be small JSON packets.
-
-```json
-{
-  "request_type": "complete",
-  "surface": "powershell-provider",
-  "os": "windows",
-  "shell": "powershell",
-  "mode": "history",
-  "cwd": "C:/projects/app",
-  "prefix": "npm",
-  "context_level": "project",
-  "cache_policy": "use_project_cache"
-}
-```
-
-Response:
-
-```json
-{
-  "items": [
-    {
-      "kind": "command",
-      "command": "npm run dev",
-      "source": "package_scripts",
-      "score": 0.92,
-      "risk": "low",
-      "requires_confirmation": false
-    }
-  ]
-}
-```
-
-## AI Run Request
-
-```json
-{
-  "request_type": "ai_run",
-  "surface": "desktop",
-  "os": "windows",
-  "shell": "powershell",
-  "intent": "find the process using port 3000",
-  "cwd": "C:/projects/app",
-  "context_level": "project",
-  "cache_policy": "project_only"
-}
-```
-
-AI Run can execute only after card validation and safety classification.
-
-## Cards
-
-AI and planners return structured cards.
-
-### Command Card
+Generated work should be represented as structured cards before execution.
 
 ```json
 {
@@ -186,186 +84,57 @@ AI and planners return structured cards.
 }
 ```
 
-### Plan Card
+For multi-step work, use a plan card with individual step risk classifications.
 
-```json
-{
-  "action_type": "plan",
-  "os": "windows",
-  "shell": "powershell",
-  "command": "",
-  "risk": "medium",
-  "category": "programming_run",
-  "requires_admin": false,
-  "modifies_system": true,
-  "needs_confirmation": true,
-  "reason": "Installs dependencies, then starts the dev server.",
-  "steps": [
-    {
-      "index": 1,
-      "command": "npm install",
-      "risk": "medium",
-      "modifies_system": true,
-      "needs_confirmation": true,
-      "reason": "Installs missing dependencies."
-    },
-    {
-      "index": 2,
-      "command": "npm run dev",
-      "risk": "low",
-      "modifies_system": false,
-      "needs_confirmation": false,
-      "reason": "Starts the configured dev script."
-    }
-  ]
-}
-```
+### Approval and safety layer
 
-### Script Card
+No generated candidate should bypass safety classification.
 
-Script cards are for longer generated scripts, such as read-only PowerShell scans or cleanup workflows.
+Examples that should require approval:
 
-```json
-{
-  "action_type": "script",
-  "os": "windows",
-  "shell": "powershell",
-  "script": "Get-ChildItem -Directory $env:USERPROFILE | ForEach-Object { ... }",
-  "risk": "low",
-  "category": "filesystem",
-  "requires_admin": false,
-  "modifies_system": false,
-  "needs_confirmation": false,
-  "reason": "Calculates folder sizes under the user profile.",
-  "display_name": "Top folders by size"
-}
-```
+- File deletion, overwrite, or mass modification.
+- Package installs and uninstalls.
+- Registry, profile, PATH, or shell configuration edits.
+- Network downloads and installer execution.
+- Privileged commands.
+- Commands that alter system state.
 
-Long scripts require stricter validation. Mutating scripts usually require confirmation.
+Read-only, low-risk commands can run more quickly when the command card has been validated.
 
-### Fallback Message
+### Command trace
 
-```json
-{
-  "action_type": "fallback_message",
-  "os": "windows",
-  "shell": "powershell",
-  "command": "",
-  "risk": "low",
-  "category": "not_a_shell_command",
-  "requires_admin": false,
-  "modifies_system": false,
-  "needs_confirmation": false,
-  "reason": "The request is not a terminal command.",
-  "fallback_message": "This looks like a writing request, not a shell workflow."
-}
-```
+AI Run should preserve an execution trace that can explain what happened.
 
-## Project / Context Engine
+Trace fields can include:
 
-Context engine outputs a normalized context packet.
-
-```text
-Detected:
-- OS and shell
-- cwd
-- project type
-- package manager
-- package scripts
-- git branch and dirty state
-- docker compose files
-- Python project metadata
-- Rust/Cargo metadata
-- cloud/deploy metadata
-- installed CLI availability
-- recent command summaries when enabled
-```
-
-Default AI requests are single-shot. Previous conversation context is not automatically included.
-
-## CLI Knowledge Layer
-
-The CLI knowledge layer provides compact tool context.
-
-```text
-Sources:
-- built-in CLI registry
-- local docs cache
-- safe live help fallback
-```
-
-It covers common tools first: npm, pnpm, yarn, bun, git, docker, docker compose, kubectl, terraform, AWS, gcloud, az, vercel, firebase, supabase, netlify, wrangler, flutter, cargo, dotnet, go, Java/Maven/Gradle, Python/pip/uv.
-
-## Command Trace
-
-AI Run stores an execution trace.
-
-```text
 - detected intent
 - context used
 - card type
-- commands/scripts run
+- commands or scripts run
 - plan steps
 - exit code
 - duration
-- logs
-- command output
+- output excerpts
 - safety decision
-```
 
-The UI may label this compactly as `Working`, with expanded title `Command Trace`.
+### Website and downloads
 
-## Cache Strategy
+The site explains AiSH, hosts install instructions, and points users to release artifacts.
 
-```text
-Project cache:
-  package scripts, git branches, project type, CLI availability
+### Release system
 
-History cache:
-  frequency, recency, accepted/rejected suggestions, compact summaries
+Release automation should produce platform-specific artifacts where supported:
 
-Docs cache:
-  known CLI docs slices and help outputs
+- Windows MSI / setup artifacts.
+- macOS packages or app bundles where available.
+- Linux packages such as `.deb`, `.rpm`, AppImage, or tarballs where implemented.
+- CLI install scripts.
 
-AI cache:
-  optional exact-context prompt response cache
-```
+## Design constraints
 
-All cache is local and clearable.
-
-## Safety Layer
-
-Safety runs after every candidate source.
-
-```text
-candidate generated by history -> safety
-candidate generated by rules   -> safety
-candidate generated by AI      -> safety
-candidate generated by provider -> safety
-```
-
-No candidate bypasses safety.
-
-AI Run may auto-run only validated low-risk cards. Medium/high-risk cards require confirmation.
-
-## Runtime Strategy
-
-MVP:
-
-```text
-- deterministic candidates
-- project inspection
-- no required model
-```
-
-Next:
-
-```text
-- local ranker for candidate ordering
-```
-
-Later:
-
-```text
-- Ken/GGUF command-card generator for explicit AI Mode
-```
+- Do not silently mutate user shell profiles.
+- Do not hide generated commands from users.
+- Do not bypass approval gates to improve perceived speed.
+- Keep installer scripts readable and reviewable.
+- Keep release workflows reproducible.
+- Keep platform-specific logic isolated.
