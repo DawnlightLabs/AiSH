@@ -3,7 +3,6 @@ use std::io::{self, Write};
 use std::process::Command;
 use std::time::Duration;
 
-const REPO: &str = "DawnlightLabs/AiSH";
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/DawnlightLabs/AiSH/releases/latest";
 const WINDOWS_INSTALLER_URL: &str = "https://aish.dawnlightlabs.com/install.ps1";
 const UNIX_INSTALLER_URL: &str = "https://aish.dawnlightlabs.com/install";
