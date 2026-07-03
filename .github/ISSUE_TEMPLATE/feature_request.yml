@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest an improvement for AiSH
+title: "feat: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the workflow first. Implementation ideas are useful, but the use case matters most.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What should AiSH help with?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Provider shell
+        - Installer
+        - Release packaging
+        - Windows integration
+        - macOS integration
+        - Linux integration
+        - Local model support
+        - Website / downloads
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks or edge cases
+      description: Mention security, approval-gate, shell profile, or platform concerns.
+    validations:
+      required: false
