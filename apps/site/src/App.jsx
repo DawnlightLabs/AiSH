@@ -187,16 +187,30 @@ function useFeatureRail(page) {
     const sections = Array.from(document.querySelectorAll('.features-cinema'));
     if (!sections.length || prefersReducedMotion()) return undefined;
 
+    const cinematicQuery = window.matchMedia('(min-width: 1080px) and (min-height: 720px)');
     let frameId = 0;
+
+    function sectionProgress(section, rect, isCinematic) {
+      if (isCinematic) {
+        const scrollable = Math.max(1, rect.height - window.innerHeight);
+        return clamp(-rect.top / scrollable);
+      }
+
+      const start = window.innerHeight * 0.88;
+      const end = window.innerHeight * 0.24;
+      return clamp((start - rect.top) / Math.max(1, start - end));
+    }
 
     function update() {
       sections.forEach((section) => {
         const rect = section.getBoundingClientRect();
-        const scrollable = Math.max(1, rect.height - window.innerHeight);
-        const progress = clamp(-rect.top / scrollable);
+        const isCinematic = cinematicQuery.matches;
+        const progress = sectionProgress(section, rect, isCinematic);
         const activeProgress = Math.min(0.999, progress);
         const active = Math.min(FEATURES.length - 1, Math.floor(activeProgress * FEATURES.length));
 
+        section.classList.toggle('is-cinematic', isCinematic);
+        section.classList.toggle('is-static-flow', !isCinematic);
         section.style.setProperty('--feature-progress', progress.toFixed(4));
         section.style.setProperty('--feature-scene', active.toString());
         section.setAttribute('data-active', `${active}`);
@@ -396,7 +410,7 @@ function FeatureCarousel() {
         <div className="features-copy">
           <p className="section-kicker">Workflow</p>
           <h2>How AiSH works.</h2>
-          <p>A pinned shell sequence takes over this section. Each scroll beat advances the command from intent to review to approval.</p>
+          <p>The cinematic version pins only when the screen has enough width and height. Smaller screens get a compact readable sequence.</p>
         </div>
         <div className="feature-stage" aria-label="AiSH workflow animation">
           <div className="feature-terminal" aria-hidden="true">
