@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Lenis from 'lenis';
+import './feature-stage.css';
 
 const GITHUB_URL = 'https://github.com/DawnlightLabs/AiSH';
 const RELEASE_URL = `${GITHUB_URL}/releases/latest`;
