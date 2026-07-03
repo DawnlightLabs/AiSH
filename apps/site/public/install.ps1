@@ -1,5 +1,6 @@
 param(
   [switch]$Headless,
+  [switch]$SkipModel,
   [string]$Version = "latest"
 )
 
@@ -63,7 +64,13 @@ if (-not $downloaded) {
 Copy-Item $downloaded.FullName $ExePath -Force
 
 if ($Headless) {
-  & $ExePath --install-headless --add-path --set-model-path --windows-terminal --editor-profiles --model-check
+  $setupArgs = @("--install-headless", "--add-path", "--set-model-path", "--windows-terminal", "--editor-profiles")
+  if ($SkipModel -or $env:AISH_SKIP_MODEL -eq "1") {
+    $setupArgs += "--skip-model"
+  } else {
+    $setupArgs += "--model-check"
+  }
+  & $ExePath @setupArgs
 } else {
   & $ExePath --install
 }
