@@ -29,9 +29,35 @@ const OS_COMMANDS = {
 };
 
 const FEATURES = [
-  ['01', 'Plain shell workflow', 'Type normally, ask when needed, and keep the terminal as the main interface.', 'normal input'],
-  ['02', 'Provider shell builds', 'Install the native provider shell directly from GitHub release assets.', 'native install'],
-  ['03', 'Approval before change', 'Read-only commands can move quickly. Mutating commands require explicit approval.', 'explicit approval'],
+  {
+    number: '01',
+    title: 'Plain shell workflow',
+    text: 'Type normally, ask when needed, and keep the terminal as the main interface.',
+    tag: 'normal input',
+    lines: ['$ aish "summarize this repo"', 'reading project files', 'returns a terminal-first plan'],
+  },
+  {
+    number: '02',
+    title: 'Provider shell builds',
+    text: 'Install the native provider shell directly from GitHub release assets.',
+    tag: 'native install',
+    lines: ['$ aish update provider', 'release asset detected', 'provider shell is ready'],
+  },
+  {
+    number: '03',
+    title: 'Approval before change',
+    text: 'Read-only commands can move quickly. Mutating commands require explicit approval.',
+    tag: 'explicit approval',
+    lines: ['$ aish "prepare a release note"', 'draft command preview', 'waiting for explicit approval'],
+  },
+];
+
+const DEMO_LINES = [
+  ['PS>', 'aish "show package scripts"', 28],
+  ['AiSH', 'Planning read-only command…', 30],
+  ['AiSH', 'Get-Content package.json | Select-String scripts', 50],
+  ['OK', 'read-only: running now', 24],
+  ['AiSH', 'Next step: ask before any system change.', 44],
 ];
 
 function prefersReducedMotion() {
@@ -162,15 +188,18 @@ function useFeatureRail(page) {
         const rect = section.getBoundingClientRect();
         const travel = Math.max(1, rect.height - window.innerHeight);
         const progress = Math.min(1, Math.max(0, -rect.top / travel));
-        const cards = Array.from(section.querySelectorAll('.feature-step-card'));
-        const active = Math.min(cards.length - 1, Math.round(progress * Math.max(cards.length - 1, 1)));
+        const active = Math.min(FEATURES.length - 1, Math.floor(progress * FEATURES.length));
 
         section.style.setProperty('--feature-progress', progress.toFixed(4));
-        section.style.setProperty('--feature-tilt', `${((progress - 0.5) * 3).toFixed(2)}deg`);
+        section.style.setProperty('--feature-tilt', `${((progress - 0.5) * 2.4).toFixed(2)}deg`);
         section.setAttribute('data-active', `${active}`);
 
-        cards.forEach((card, index) => {
+        section.querySelectorAll('.feature-step-card').forEach((card, index) => {
           card.classList.toggle('is-active', index === active);
+        });
+
+        section.querySelectorAll('.feature-terminal-step').forEach((step, index) => {
+          step.classList.toggle('is-active', index === active);
         });
       });
 
@@ -224,6 +253,32 @@ function Hero() {
         <div className="logo-panel reveal" aria-label="AiSH logo">
           <span className="logo-orbit" aria-hidden="true" />
           <LogoMark className="hero-logo-lockup" variant="full" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DemoSection() {
+  return (
+    <section className="demo-section" aria-label="AiSH simulated terminal demo">
+      <div className="container demo-panel reveal">
+        <div className="demo-copy">
+          <p className="section-kicker">Live feel</p>
+          <h2>A terminal demo without a video file.</h2>
+          <p>Commands type in, AiSH plans the shell action, then waits before anything changes your system.</p>
+        </div>
+        <div className="demo-terminal" aria-label="Simulated AiSH terminal session">
+          <div className="terminal-window-bar"><span /><span /><span /></div>
+          <div className="demo-terminal-body">
+            {DEMO_LINES.map(([prompt, text, chars], index) => (
+              <p className="demo-line" style={{ '--line': index, '--chars': chars }} key={`${prompt}-${text}`}>
+                <span className="demo-prompt">{prompt}</span>
+                <span className="demo-type">{text}</span>
+              </p>
+            ))}
+            <span className="demo-cursor" aria-hidden="true" />
+          </div>
         </div>
       </div>
     </section>
@@ -300,21 +355,27 @@ function FeatureCarousel() {
       <div className="container features-pin reveal">
         <div className="features-copy">
           <p className="section-kicker">Workflow</p>
-          <h2>Three steps. One native command line.</h2>
-          <p>AiSH stays out of the way until the shell needs intent, context, or permission.</p>
+          <h2>Force-scroll through the shell loop.</h2>
+          <p>The terminal view changes as you scroll: intent, command planning, and approval stay in one native flow.</p>
         </div>
         <div className="feature-stage" aria-label="AiSH workflow animation">
           <div className="feature-terminal" aria-hidden="true">
             <div className="terminal-window-bar"><span /><span /><span /></div>
-            <div className="terminal-lines">
-              <p><span>$</span> aish plan "clean the repo"</p>
-              <p><span>→</span> inspect only</p>
-              <p><span>✓</span> ask before changing files</p>
+            <div className="feature-terminal-body">
+              {FEATURES.map((feature) => (
+                <div className="feature-terminal-step" key={feature.title}>
+                  {feature.lines.map((line, index) => (
+                    <p key={line}>
+                      <span>{index === 0 ? '$' : index === 1 ? '→' : '✓'}</span>
+                      {line.replace(/^\$\s?/, '')}
+                    </p>
+                  ))}
+                </div>
+              ))}
             </div>
           </div>
-          <div className="feature-progress-track" aria-hidden="true"><span /></div>
           <div className="feature-deck">
-            {FEATURES.map(([number, title, text, tag], index) => (
+            {FEATURES.map(({ number, title, text, tag }, index) => (
               <article className="feature-card feature-step-card" style={{ '--step': index }} key={title}>
                 <div className="feature-card-top">
                   <span className="feature-number">{number}</span>
@@ -325,6 +386,7 @@ function FeatureCarousel() {
               </article>
             ))}
           </div>
+          <div className="feature-progress-track" aria-hidden="true"><span /></div>
         </div>
       </div>
     </section>
@@ -368,6 +430,7 @@ function Home() {
   return (
     <main>
       <Hero />
+      <DemoSection />
       <InstallTabs />
       <FeatureCarousel />
       <Cta />
