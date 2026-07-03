@@ -1,0 +1,161 @@
+/* Footer idle glitch override. Imported last so it replaces the old hover-only color fill. */
+
+.footer-word {
+  --footer-dot-size: clamp(7px, 0.78vw, 11px);
+  --footer-dot-a: rgba(255, 89, 94, 0.82);
+  --footer-dot-b: rgba(255, 202, 58, 0.82);
+  --footer-dot-c: rgba(64, 148, 183, 0.84);
+  --footer-dot-d: rgba(138, 201, 38, 0.7);
+  position: relative;
+  isolation: isolate;
+}
+
+.footer-word span {
+  position: relative;
+  z-index: 1;
+  color: transparent;
+  background:
+    radial-gradient(circle at 1.2px 1.2px, rgba(24, 20, 16, 0.34) 1.15px, transparent 1.55px),
+    radial-gradient(circle at 5px 5px, rgba(24, 20, 16, 0.12) 0.9px, transparent 1.3px);
+  background-size: var(--footer-dot-size) var(--footer-dot-size), calc(var(--footer-dot-size) * 2) calc(var(--footer-dot-size) * 2);
+  background-position: 0 0, 3px 3px;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: footer-base-dot-noise 4.8s steps(8, end) infinite;
+}
+
+.footer-word::before,
+.footer-word::after {
+  content: "AiSH";
+  position: absolute;
+  inset: 0;
+  color: transparent;
+  font: inherit;
+  font-size: clamp(4.8rem, 17vw, 12rem);
+  font-weight: 950;
+  line-height: 0.76;
+  letter-spacing: -0.045em !important;
+  pointer-events: none;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.footer-word::before {
+  z-index: 2;
+  background:
+    radial-gradient(circle at 1.4px 1.4px, var(--footer-dot-a) 1.18px, transparent 1.55px),
+    radial-gradient(circle at 3px 4px, var(--footer-dot-b) 1.05px, transparent 1.42px),
+    radial-gradient(circle at 6px 2px, var(--footer-dot-c) 1px, transparent 1.38px),
+    radial-gradient(circle at 2px 7px, var(--footer-dot-d) 0.95px, transparent 1.32px);
+  background-size:
+    var(--footer-dot-size) var(--footer-dot-size),
+    calc(var(--footer-dot-size) * 1.35) calc(var(--footer-dot-size) * 1.35),
+    calc(var(--footer-dot-size) * 1.75) calc(var(--footer-dot-size) * 1.75),
+    calc(var(--footer-dot-size) * 2.2) calc(var(--footer-dot-size) * 2.2);
+  background-position: 0 0, 4px 2px, 8px 5px, 2px 9px;
+  opacity: 0.48;
+  clip-path: none;
+  filter: saturate(1.15) contrast(1.05);
+  animation:
+    footer-dot-color-cycle 2.2s steps(7, end) infinite,
+    footer-dot-crawl 3.4s steps(11, end) infinite;
+}
+
+.footer-word::after {
+  z-index: 3;
+  background:
+    radial-gradient(circle at 1.2px 1.2px, rgba(255, 255, 255, 0.58) 0.85px, transparent 1.2px),
+    radial-gradient(circle at 2px 2px, rgba(64, 148, 183, 0.5) 0.9px, transparent 1.3px),
+    radial-gradient(circle at 4px 1px, rgba(255, 89, 94, 0.4) 0.8px, transparent 1.25px);
+  background-size: 10px 10px, 14px 14px, 18px 18px;
+  background-position: 0 0, 5px 3px, 9px 1px;
+  opacity: 0.22;
+  transform: translateX(0);
+  animation:
+    footer-glitch-slice 2.8s steps(1, end) infinite,
+    footer-dot-flash 1.7s steps(5, end) infinite;
+}
+
+.footer-shell:hover .footer-word::before {
+  opacity: 0.68;
+  animation:
+    footer-dot-color-cycle 1.15s steps(7, end) infinite,
+    footer-dot-crawl 1.8s steps(11, end) infinite,
+    footer-hover-jitter 0.9s steps(2, end) infinite;
+}
+
+.footer-shell:hover .footer-word::after {
+  opacity: 0.34;
+  animation:
+    footer-glitch-slice 1.35s steps(1, end) infinite,
+    footer-dot-flash 0.8s steps(5, end) infinite;
+}
+
+.footer-shell:hover .footer-word span {
+  transform: none;
+  background-position: 0 0, 3px 3px;
+}
+
+@keyframes footer-base-dot-noise {
+  0%, 100% { background-position: 0 0, 3px 3px; filter: opacity(1); }
+  22% { background-position: 2px 0, 7px 3px; filter: opacity(0.9); }
+  43% { background-position: -1px 2px, 4px 8px; filter: opacity(1); }
+  68% { background-position: 3px -1px, 1px 5px; filter: opacity(0.86); }
+}
+
+@keyframes footer-dot-color-cycle {
+  0% { filter: hue-rotate(0deg) saturate(1.15) contrast(1.05); opacity: 0.42; }
+  16% { filter: hue-rotate(45deg) saturate(1.25) contrast(1.08); opacity: 0.56; }
+  32% { filter: hue-rotate(118deg) saturate(1.08) contrast(1.12); opacity: 0.46; }
+  48% { filter: hue-rotate(205deg) saturate(1.32) contrast(1.04); opacity: 0.62; }
+  64% { filter: hue-rotate(292deg) saturate(1.16) contrast(1.12); opacity: 0.5; }
+  82% { filter: hue-rotate(330deg) saturate(1.35) contrast(1.05); opacity: 0.66; }
+  100% { filter: hue-rotate(360deg) saturate(1.15) contrast(1.05); opacity: 0.42; }
+}
+
+@keyframes footer-dot-crawl {
+  0% { background-position: 0 0, 4px 2px, 8px 5px, 2px 9px; }
+  25% { background-position: 3px -2px, 8px 4px, 4px 9px, 7px 1px; }
+  50% { background-position: -2px 4px, 2px 8px, 11px 2px, 4px 13px; }
+  75% { background-position: 5px 2px, 9px -1px, 1px 7px, 12px 5px; }
+  100% { background-position: 0 0, 4px 2px, 8px 5px, 2px 9px; }
+}
+
+@keyframes footer-glitch-slice {
+  0%, 78%, 100% { clip-path: inset(0 0 0 0); transform: translate(0, 0); }
+  80% { clip-path: inset(12% 0 64% 0); transform: translate(-5px, -1px); }
+  83% { clip-path: inset(58% 0 28% 0); transform: translate(4px, 1px); }
+  86% { clip-path: inset(34% 0 48% 0); transform: translate(-2px, 0); }
+  89% { clip-path: inset(0 0 0 0); transform: translate(0, 0); }
+}
+
+@keyframes footer-dot-flash {
+  0%, 100% { filter: hue-rotate(0deg); }
+  33% { filter: hue-rotate(140deg); }
+  66% { filter: hue-rotate(280deg); }
+}
+
+@keyframes footer-hover-jitter {
+  0%, 100% { transform: translate(0, 0); }
+  25% { transform: translate(2px, 0); }
+  50% { transform: translate(-2px, 1px); }
+  75% { transform: translate(1px, -1px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .footer-word span,
+  .footer-word::before,
+  .footer-word::after,
+  .footer-shell:hover .footer-word::before,
+  .footer-shell:hover .footer-word::after {
+    animation: none;
+  }
+
+  .footer-word::before {
+    opacity: 0.48;
+  }
+
+  .footer-word::after {
+    opacity: 0.16;
+  }
+}
