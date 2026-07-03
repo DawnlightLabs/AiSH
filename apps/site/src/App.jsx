@@ -178,6 +178,10 @@ function useRevealOnScroll(page) {
   }, [page]);
 }
 
+function clamp(value, min = 0, max = 1) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function useFeatureRail(page) {
   useEffect(() => {
     const sections = Array.from(document.querySelectorAll('.features-cinema'));
@@ -188,20 +192,29 @@ function useFeatureRail(page) {
     function update() {
       sections.forEach((section) => {
         const rect = section.getBoundingClientRect();
-        const travel = Math.max(1, window.innerHeight + rect.height);
-        const progress = Math.min(1, Math.max(0, (window.innerHeight - rect.top) / travel));
-        const activeProgress = Math.min(0.999, Math.max(0, progress));
+        const scrollable = Math.max(1, rect.height - window.innerHeight);
+        const progress = clamp(-rect.top / scrollable);
+        const activeProgress = Math.min(0.999, progress);
         const active = Math.min(FEATURES.length - 1, Math.floor(activeProgress * FEATURES.length));
 
         section.style.setProperty('--feature-progress', progress.toFixed(4));
+        section.style.setProperty('--feature-scene', active.toString());
         section.setAttribute('data-active', `${active}`);
 
         section.querySelectorAll('.feature-step-card').forEach((card, index) => {
+          const local = clamp((progress * FEATURES.length) - index);
+          card.style.setProperty('--step-progress', local.toFixed(4));
           card.classList.toggle('is-active', index === active);
+          card.classList.toggle('is-before', index < active);
+          card.classList.toggle('is-after', index > active);
         });
 
         section.querySelectorAll('.feature-terminal-step').forEach((step, index) => {
+          const local = clamp((progress * FEATURES.length) - index);
+          step.style.setProperty('--step-progress', local.toFixed(4));
           step.classList.toggle('is-active', index === active);
+          step.classList.toggle('is-before', index < active);
+          step.classList.toggle('is-after', index > active);
         });
       });
 
@@ -383,7 +396,7 @@ function FeatureCarousel() {
         <div className="features-copy">
           <p className="section-kicker">Workflow</p>
           <h2>How AiSH works.</h2>
-          <p>Scroll through a simulated shell session. The active step changes with the page, without screenshots or fake panels.</p>
+          <p>A pinned shell sequence takes over this section. Each scroll beat advances the command from intent to review to approval.</p>
         </div>
         <div className="feature-stage" aria-label="AiSH workflow animation">
           <div className="feature-terminal" aria-hidden="true">
