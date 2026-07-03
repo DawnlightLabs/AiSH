@@ -1,14 +1,12 @@
-/* Later import: overrides footer.css for the demo, feature stage, and footer hover fill. */
+/* Later import: overrides footer.css for the simulated demo, feature scroll, and footer hover fill. */
 
 .demo-section {
   padding: 4px 0 74px;
 }
 
 .demo-panel {
-  display: grid;
-  grid-template-columns: minmax(260px, 0.38fr) minmax(0, 0.62fr);
-  gap: 24px;
-  align-items: stretch;
+  display: block;
+  max-width: 920px;
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -16,24 +14,6 @@
     radial-gradient(circle at 82% 18%, rgba(224, 183, 95, 0.13), transparent 18rem),
     rgba(255, 250, 242, 0.62);
   box-shadow: var(--shadow);
-}
-
-.demo-copy {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: clamp(18px, 4vw, 34px);
-}
-
-.demo-copy h2 {
-  max-width: 480px;
-}
-
-.demo-copy p:last-child {
-  max-width: 440px;
-  margin: 14px 0 0;
-  color: var(--muted);
-  line-height: 1.65;
 }
 
 .demo-terminal,
@@ -47,7 +27,7 @@
 }
 
 .demo-terminal {
-  min-height: 320px;
+  min-height: 330px;
 }
 
 .terminal-window-bar {
@@ -67,10 +47,10 @@
 
 .demo-terminal-body {
   position: relative;
-  min-height: 260px;
-  padding: clamp(18px, 4vw, 30px);
+  min-height: 270px;
+  padding: clamp(18px, 4vw, 34px);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: clamp(0.78rem, 1.6vw, 0.98rem);
+  font-size: clamp(0.82rem, 1.5vw, 1rem);
 }
 
 .demo-line {
@@ -81,7 +61,7 @@
   color: rgba(255, 248, 237, 0.88);
   opacity: 0;
   animation: demo-line-in 0.2s linear forwards;
-  animation-delay: calc(var(--line) * 1.25s + 0.3s);
+  animation-delay: calc(var(--line) * 1.18s + 0.25s);
 }
 
 .demo-prompt {
@@ -96,8 +76,8 @@
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
-  animation: demo-type 1.08s steps(var(--chars)) forwards;
-  animation-delay: calc(var(--line) * 1.25s + 0.35s);
+  animation: demo-type 1s steps(var(--chars)) forwards;
+  animation-delay: calc(var(--line) * 1.18s + 0.3s);
 }
 
 .demo-cursor {
@@ -122,18 +102,17 @@
 }
 
 .features-cinema {
-  min-height: 154vh;
-  padding: 8px 0 50px;
+  min-height: 150vh;
+  padding: 10px 0 58px;
   --feature-progress: 0;
-  --feature-tilt: 0deg;
 }
 
 .features-pin {
   position: sticky;
   top: 78px;
   display: grid;
-  grid-template-columns: minmax(260px, 0.35fr) minmax(0, 0.65fr);
-  gap: 28px;
+  grid-template-columns: minmax(260px, 0.34fr) minmax(0, 0.66fr);
+  gap: 30px;
   align-items: center;
   padding: 18px 0 34px;
 }
@@ -147,19 +126,19 @@
 }
 
 .features-copy h2 {
-  max-width: 440px;
+  max-width: 420px;
 }
 
 .features-copy p:last-child {
-  max-width: 400px;
+  max-width: 390px;
   margin: 16px 0 0;
 }
 
 .feature-stage {
   position: relative;
-  min-height: 430px;
+  min-height: 470px;
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(300px, 0.95fr);
+  grid-template-columns: minmax(310px, 1fr) minmax(280px, 0.9fr);
   gap: 16px;
   align-items: stretch;
   padding: 16px;
@@ -171,8 +150,6 @@
     rgba(255, 250, 242, 0.58);
   box-shadow: var(--shadow);
   overflow: hidden;
-  transform: perspective(1100px) rotateX(calc(var(--feature-tilt) * -0.35));
-  transition: transform 0.18s linear;
 }
 
 .feature-stage::before {
@@ -205,14 +182,14 @@
   position: relative;
   flex: 1;
   min-height: 0;
-  padding: clamp(18px, 4vw, 30px);
+  padding: clamp(18px, 4vw, 34px);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: clamp(0.82rem, 1.55vw, 1rem);
+  font-size: clamp(0.84rem, 1.5vw, 1rem);
 }
 
 .feature-terminal-step {
   position: absolute;
-  inset: clamp(18px, 4vw, 30px);
+  inset: clamp(18px, 4vw, 34px);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -255,7 +232,7 @@
   padding: 18px 18px 16px;
   border-radius: var(--radius-md);
   background: rgba(255, 250, 242, 0.72);
-  transform: translateX(calc((var(--step) - 1) * 10px)) scale(0.985);
+  transform: translateX(calc((var(--step) - 1) * 8px)) scale(0.985);
   opacity: 0.62;
   transition:
     opacity 0.22s ease,
@@ -319,14 +296,13 @@
 
 .feature-progress-track {
   position: absolute;
-  left: 50%;
+  left: calc(16px + ((100% - 32px) * 0.52));
   top: 22px;
   bottom: 22px;
   width: 2px;
   border-radius: 999px;
   background: rgba(78, 62, 43, 0.12);
   overflow: hidden;
-  transform: translateX(-50%);
 }
 
 .feature-progress-track span {
@@ -411,19 +387,15 @@
 }
 
 @media (max-width: 900px) {
-  .demo-panel,
-  .features-pin,
-  .feature-stage {
-    grid-template-columns: 1fr;
-  }
-
   .features-cinema {
     min-height: auto;
   }
 
-  .features-pin {
+  .features-pin,
+  .feature-stage {
     position: relative;
     top: auto;
+    grid-template-columns: 1fr;
   }
 
   .feature-stage {
@@ -431,7 +403,7 @@
   }
 
   .feature-terminal {
-    min-height: 260px;
+    min-height: 280px;
   }
 
   .feature-progress-track {
