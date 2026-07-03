@@ -1,0 +1,5 @@
+.page-shell+*{margin-top:72px!important;padding-top:48px!important;background:transparent!important}
+.footer-shell{min-height:500px!important;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;text-align:center!important;gap:22px!important;background:linear-gradient(180deg,rgba(249,242,231,0),rgba(232,220,201,.32))!important}
+.footer-word{width:100%!important;display:flex!important;justify-content:center!important;margin:0 auto!important}
+.footer-word span{position:relative!important;left:auto!important;right:auto!important;transform:none!important;width:auto!important;text-align:center!important}
+.footer-bottom{display:flex!important;flex-wrap:wrap!important;justify-content:center!important;gap:10px 24px!important;text-align:center!important;margin:0 auto!important}
