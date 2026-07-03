@@ -7,5 +7,6 @@ import './footer-glitch.css';
 import './hero-glitch.css';
 import './install-floaters.css';
 import './footer-edge.css';
+import './downloads-page.css';
 
 createRoot(document.getElementById('root')).render(<App />);
