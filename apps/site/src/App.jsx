@@ -76,15 +76,12 @@ function useRevealAnimations() {
   }, []);
 }
 
-function LogoMark({ className = 'brand-mark' }) {
-  return (
-    <svg className={className} viewBox="0 0 120 120" role="img" aria-label="AiSH logo">
-      <path d="M60 8 103 33v50L82 95 70 80H50L38 95 17 83V33Z" fill="none" stroke="currentColor" strokeWidth="8" strokeLinejoin="round" />
-      <path d="M31 53 42 42 53 53" fill="none" stroke="currentColor" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M67 53 78 42 89 53" fill="none" stroke="currentColor" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M49 66h22" fill="none" stroke="currentColor" strokeWidth="7" strokeLinecap="round" />
-    </svg>
-  );
+function LogoMark({ className = 'brand-mark', variant = 'icon' }) {
+  const src = variant === 'full'
+    ? '/brand/aish-full-horizontal-white.svg'
+    : '/brand/aish-icon-white.svg';
+  const alt = variant === 'full' ? 'AiSH wordmark' : 'AiSH logo';
+  return <img className={className} src={src} alt={alt} draggable="false" />;
 }
 
 function Nav() {

@@ -135,3 +135,17 @@ footer { border-top: 1px solid var(--line); padding: 30px 0 42px; color: #757575
   .command-box { align-items: flex-start; flex-wrap: wrap; }
   .copy-button { width: 100%; }
 }
+
+.brand-mark,
+.hero-logo-mark {
+  display: block;
+  object-fit: contain;
+}
+
+.brand-mark {
+  color: var(--white);
+}
+
+.hero-logo-mark {
+  filter: drop-shadow(0 18px 42px rgba(0, 0, 0, 0.42));
+}
