@@ -2,9 +2,8 @@
   "name": "aish",
   "version": "0.1.0",
   "private": true,
-  "description": "AiSH intelligent terminal app and shell/provider layer.",
+  "description": "AiSH provider shell and local AI command planner.",
   "workspaces": [
-    "apps/desktop",
     "apps/site"
   ],
   "scripts": {
@@ -13,14 +12,9 @@
     "site:dev": "npm --workspace apps/site run dev",
     "site:build": "npm --workspace apps/site run build",
     "site:preview": "npm --workspace apps/site run preview",
-    "desktop:dev": "npm --workspace apps/desktop run tauri dev",
-    "desktop:build": "npm run provider:sidecar && npm --workspace apps/desktop run tauri build",
-    "desktop:check": "npm --workspace apps/desktop run typecheck",
     "provider:build": "cargo build --release -p aish-provider-shell",
     "provider:dev": "cargo run -p aish-provider-shell",
-    "provider:sidecar": "npm run provider:build && node scripts/package/prepare-provider-sidecar.mjs",
-    "installer:setup:windows": "powershell -ExecutionPolicy Bypass -File scripts/install/aish-installer-setup.ps1",
-    "installer:setup:unix": "sh scripts/install/aish-installer-setup.sh",
-    "package:all": "npm run desktop:build && npm run provider:build"
+    "provider:check": "cargo check --workspace",
+    "release:provider": "cargo build --release -p aish-provider-shell"
   }
 }

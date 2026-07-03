@@ -11,7 +11,10 @@ const DEFAULT_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-Coder-
 pub fn handle_setup_args() {
     let args = env::args().collect::<Vec<_>>();
 
-    if args.iter().any(|arg| arg == "--setup-non-interactive") {
+    if args.iter().any(|arg| arg == "--setup-non-interactive")
+        || args.iter().any(|arg| arg == "--install-headless")
+        || (args.iter().any(|arg| arg == "--install") && args.iter().any(|arg| arg == "--headless"))
+    {
         run_setup_non_interactive(true, &args);
     }
 
@@ -25,7 +28,7 @@ pub fn handle_setup_args() {
         }
     }
 
-    if args.iter().any(|arg| arg == "--setup") {
+    if args.iter().any(|arg| arg == "--setup") || args.iter().any(|arg| arg == "--install") {
         run_setup_wizard(true);
     }
 }
@@ -35,7 +38,6 @@ fn run_setup_non_interactive(exit_after: bool, args: &[String]) {
         .map(PathBuf::from)
         .unwrap_or_else(default_install_dir);
 
-    let install_app = !has_flag(args, "--no-app");
     let model_check = has_flag(args, "--model-check") || !has_flag(args, "--skip-model");
     let add_to_path = has_flag(args, "--add-path") || !has_flag(args, "--no-add-path");
     let set_model_env =
@@ -52,7 +54,7 @@ fn run_setup_non_interactive(exit_after: bool, args: &[String]) {
         "[{}] Model check / download",
         if model_check { "✓" } else { " " }
     );
-    println!("[{}] AiSH desktop app", if install_app { "✓" } else { " " });
+    println!("[✓] Install AiSH provider shell");
 
     if let Err(error) = fs::create_dir_all(install_dir.join("bin")) {
         eprintln!("setup failed: could not create install directory: {error}");
@@ -151,15 +153,13 @@ fn install_provider_binary(install_dir: &Path) -> Result<PathBuf, String> {
 }
 
 pub fn run_setup_wizard(exit_after: bool) {
+    println!("AiSH install");
+    println!("Shell provider runtime is required.");
     let install_dir = prompt_with_default(
         "Install location",
         default_install_dir().display().to_string(),
     );
     let install_dir = PathBuf::from(install_dir);
-    let install_kind = prompt_with_default(
-        "Install type: 1 provider shell only, 2 desktop app + provider shell",
-        "2".to_string(),
-    );
     let download_model = prompt_yes_no("Download/check the Qwen2.5 Coder model now", true);
     let add_to_path = prompt_yes_no("Add aish.exe to PATH", true);
     let set_model_env = prompt_yes_no("Set up local model path environment variable", true);
@@ -205,11 +205,7 @@ pub fn run_setup_wizard(exit_after: bool) {
         }
     };
 
-    if install_kind.trim() == "2" {
-        println!("desktop app install selected; package installer will place the desktop bundle for this OS.");
-    } else {
-        println!("provider shell only selected.");
-    }
+    println!("provider shell install selected.");
 
     if let Some(provider_path) = provider_target.as_deref() {
         if add_to_path {
