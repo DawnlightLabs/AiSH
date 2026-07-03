@@ -1,0 +1,113 @@
+.install .container {
+  position: relative;
+}
+
+.install .section-heading {
+  position: relative;
+  z-index: 2;
+}
+
+.install .container::before,
+.install .container::after,
+.install .section-heading::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  width: clamp(54px, 5vw, 72px);
+  height: clamp(92px, 8vw, 112px);
+  pointer-events: none;
+  transform-origin: 50% 0;
+  background:
+    linear-gradient(rgba(78, 62, 43, 0.22), rgba(78, 62, 43, 0.08)) 50% 0 / 1px 36% no-repeat,
+    radial-gradient(circle at 50% 68%, rgba(255, 255, 255, 0.82), rgba(255, 250, 242, 0.58) 58%, rgba(239, 231, 217, 0.42) 100%) 50% 100% / 76% 54% no-repeat,
+    var(--os-icon) 50% 82% / 34% 24% no-repeat;
+  filter: drop-shadow(0 12px 24px rgba(72, 55, 34, 0.12));
+  animation: os-dangle var(--os-speed, 4.8s) ease-in-out infinite;
+  animation-delay: var(--os-delay, 0s);
+}
+
+.install .container::before {
+  --os-icon: url('/os/windows.svg');
+  --os-speed: 4.6s;
+  --os-delay: -0.4s;
+  top: clamp(-8px, -0.8vw, 0px);
+  right: clamp(230px, 23vw, 330px);
+}
+
+.install .container::after {
+  --os-icon: url('/os/apple.svg');
+  --os-speed: 5.2s;
+  --os-delay: -1.2s;
+  top: clamp(-34px, -2.4vw, -12px);
+  right: clamp(130px, 15vw, 220px);
+}
+
+.install .section-heading::after {
+  --os-icon: url('/os/linux.svg');
+  --os-speed: 4.9s;
+  --os-delay: -2s;
+  top: clamp(-24px, -1.6vw, -8px);
+  right: clamp(-560px, -42vw, -390px);
+}
+
+.install .installer {
+  position: relative;
+  z-index: 1;
+}
+
+.install .container:hover::before,
+.install .container:hover::after,
+.install .container:hover .section-heading::after {
+  animation-duration: 2.4s;
+}
+
+@keyframes os-dangle {
+  0%, 100% { transform: translateY(0) rotate(-5deg); }
+  25% { transform: translateY(-10px) rotate(4deg); }
+  50% { transform: translateY(4px) rotate(7deg); }
+  75% { transform: translateY(-6px) rotate(-3deg); }
+}
+
+@media (max-width: 900px) {
+  .install .container::before,
+  .install .container::after,
+  .install .section-heading::after {
+    opacity: 0.34;
+    width: 48px;
+    height: 82px;
+  }
+
+  .install .container::before {
+    right: 138px;
+    top: -18px;
+  }
+
+  .install .container::after {
+    right: 72px;
+    top: -30px;
+  }
+
+  .install .section-heading::after {
+    right: 6px;
+    top: -28px;
+  }
+}
+
+@media (max-width: 650px) {
+  .install .container::before,
+  .install .container::after,
+  .install .section-heading::after {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .install .container::before,
+  .install .container::after,
+  .install .section-heading::after,
+  .install .container:hover::before,
+  .install .container:hover::after,
+  .install .container:hover .section-heading::after {
+    animation: none;
+  }
+}
