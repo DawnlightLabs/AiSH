@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Lenis from 'lenis';
-import './feature-stage.css';
 
 const GITHUB_URL = 'https://github.com/DawnlightLabs/AiSH';
 const RELEASE_URL = `${GITHUB_URL}/releases/latest`;
@@ -189,9 +188,10 @@ function useFeatureRail(page) {
     function update() {
       sections.forEach((section) => {
         const rect = section.getBoundingClientRect();
-        const travel = Math.max(1, rect.height - window.innerHeight);
-        const progress = Math.min(1, Math.max(0, -rect.top / travel));
-        const active = Math.min(FEATURES.length - 1, Math.floor(progress * FEATURES.length));
+        const travel = Math.max(1, window.innerHeight + rect.height);
+        const progress = Math.min(1, Math.max(0, (window.innerHeight - rect.top) / travel));
+        const activeProgress = Math.min(0.999, Math.max(0, progress));
+        const active = Math.min(FEATURES.length - 1, Math.floor(activeProgress * FEATURES.length));
 
         section.style.setProperty('--feature-progress', progress.toFixed(4));
         section.setAttribute('data-active', `${active}`);
@@ -203,6 +203,36 @@ function useFeatureRail(page) {
         section.querySelectorAll('.feature-terminal-step').forEach((step, index) => {
           step.classList.toggle('is-active', index === active);
         });
+      });
+
+      frameId = requestAnimationFrame(update);
+    }
+
+    update();
+    return () => cancelAnimationFrame(frameId);
+  }, [page]);
+}
+
+function useDemoScroll(page) {
+  useEffect(() => {
+    const panels = Array.from(document.querySelectorAll('.demo-panel'));
+    if (!panels.length || prefersReducedMotion()) {
+      panels.forEach((panel) => panel.classList.add('is-playing'));
+      return undefined;
+    }
+
+    let frameId = 0;
+
+    function update() {
+      panels.forEach((panel) => {
+        const rect = panel.getBoundingClientRect();
+        const start = window.innerHeight * 0.94;
+        const end = window.innerHeight * 0.24;
+        const visibleProgress = Math.min(1, Math.max(0, (start - rect.top) / Math.max(1, start - end)));
+        const progress = window.scrollY > 8 ? visibleProgress : 0;
+
+        panel.style.setProperty('--demo-progress', progress.toFixed(4));
+        panel.classList.toggle('is-playing', progress > 0.08);
       });
 
       frameId = requestAnimationFrame(update);
@@ -453,6 +483,7 @@ export default function App() {
   const page = useClientRoute();
   useLenisScroll();
   useRevealOnScroll(page);
+  useDemoScroll(page);
   useFeatureRail(page);
 
   return (
