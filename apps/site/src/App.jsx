@@ -73,6 +73,37 @@ function useClientRoute() {
   return page;
 }
 
+function useRevealOnScroll(page) {
+  useEffect(() => {
+    const elements = Array.from(document.querySelectorAll('.reveal'));
+    if (!elements.length) return undefined;
+
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !('IntersectionObserver' in window)) {
+      elements.forEach((element) => element.classList.add('is-visible'));
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('is-visible');
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.16, rootMargin: '0px 0px -8% 0px' },
+    );
+
+    elements.forEach((element, index) => {
+      element.style.setProperty('--reveal-delay', `${Math.min(index * 70, 260)}ms`);
+      observer.observe(element);
+    });
+
+    return () => observer.disconnect();
+  }, [page]);
+}
+
 function LogoMark({ className = 'brand-mark', variant = 'icon' }) {
   const src = variant === 'full'
     ? '/brand/aish-full-horizontal-graphite.svg'
@@ -113,6 +144,7 @@ function Hero() {
           </div>
         </div>
         <div className="logo-panel reveal" aria-label="AiSH logo">
+          <span className="logo-orbit" aria-hidden="true" />
           <LogoMark className="hero-logo-lockup" variant="full" />
         </div>
       </div>
@@ -248,11 +280,11 @@ function Footer() {
 
   return (
     <footer className="site-footer">
-      <div className="container footer-shell">
+      <div className="container footer-shell reveal">
         <div className="footer-word" aria-label="AiSH"><span>AiSH</span></div>
         <div className="footer-bottom">
           <span>© {year} Dawnlight Labs</span>
-          <span>Artificially Intelligent Shell</span>
+          <span>AiSH — Artificially Intelligent Shell</span>
         </div>
       </div>
     </footer>
@@ -261,6 +293,7 @@ function Footer() {
 
 export default function App() {
   const page = useClientRoute();
+  useRevealOnScroll(page);
 
   return (
     <>
