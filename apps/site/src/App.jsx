@@ -316,39 +316,7 @@ function Footer() {
 
   return (
     <footer className="site-footer">
-      <div className="container footer-card">
-        <div className="footer-top">
-          <div className="footer-newsletter">
-            <span className="footer-kicker">AiSH Dispatch</span>
-            <p>Native shell intelligence for Windows, macOS, and Linux.</p>
-            <form className="footer-form">
-              <label className="sr-only" htmlFor="footer-email">Email address</label>
-              <input id="footer-email" type="email" placeholder="email@domain.com" />
-              <button type="button">Join the waitlist</button>
-            </form>
-          </div>
-
-          <nav className="footer-links" aria-label="Footer navigation">
-            <div>
-              <span>Product</span>
-              <a href="/#install">Install</a>
-              <a href="/#features">Features</a>
-              <a href="/downloads/">Downloads</a>
-            </div>
-            <div>
-              <span>Build</span>
-              <a href={GITHUB_URL}>GitHub</a>
-              <a href={RELEASE_URL}>Releases</a>
-              <a href="/#top">Back to top</a>
-            </div>
-            <div>
-              <span>Company</span>
-              <a href="https://dawnlightlabs.com">Dawnlight Labs</a>
-              <a href="mailto:hello@dawnlightlabs.com">Contact</a>
-            </div>
-          </nav>
-        </div>
-
+      <div className="container footer-shell">
         <div className="footer-word" aria-label="AiSH">
           <span>AiSH</span>
         </div>
