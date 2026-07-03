@@ -1,30 +1,43 @@
-.site-footer {
-  margin-top: 108px;
-  padding: 0 0 42px;
+footer.site-footer {
+  position: relative;
+  margin: 82px 0 0 !important;
+  padding: 0 0 56px !important;
+  border: 0 !important;
   border-top: 0 !important;
+  border-image: none !important;
   background: transparent !important;
-  overflow: visible;
+  color: var(--text);
+  overflow: visible !important;
 }
 
-.site-footer::before {
+footer.site-footer::before,
+footer.site-footer::after {
   content: none !important;
   display: none !important;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 
 .footer-card,
 .footer-shell {
   position: relative;
+  width: min(calc(100% - 36px), var(--max-width));
+  margin-inline: auto;
   overflow: hidden;
-  padding: clamp(24px, 3.5vw, 42px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
+  padding: clamp(24px, 3.8vw, 42px) clamp(22px, 3.8vw, 44px) 24px;
+  border: 1px solid rgba(78, 62, 43, 0.14);
+  border-radius: var(--radius-lg);
   background:
-    radial-gradient(circle at 16% 22%, rgba(64, 148, 183, 0.12), transparent 30%),
-    radial-gradient(circle at 92% 86%, rgba(215, 166, 75, 0.13), transparent 32%),
-    linear-gradient(135deg, #0b0b0a 0%, #15130f 58%, #080807 100%);
-  box-shadow: 0 32px 70px rgba(38, 31, 21, 0.32);
-  color: #f6efe4;
+    radial-gradient(circle at 18% 8%, rgba(255, 255, 255, 0.86), transparent 20rem),
+    radial-gradient(circle at 88% 20%, rgba(215, 166, 75, 0.16), transparent 18rem),
+    radial-gradient(circle at 12% 82%, rgba(64, 148, 183, 0.12), transparent 16rem),
+    rgba(255, 250, 242, 0.58);
+  box-shadow: var(--glass-shadow);
+  color: var(--text);
   isolation: isolate;
+  backdrop-filter: blur(30px) saturate(1.35);
+  -webkit-backdrop-filter: blur(30px) saturate(1.35);
 }
 
 .footer-card::before,
@@ -33,11 +46,22 @@
   position: absolute;
   inset: 0;
   z-index: -1;
+  pointer-events: none;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 34px 34px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.72), transparent 76%);
+    linear-gradient(rgba(48, 38, 29, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(48, 38, 29, 0.035) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.46), transparent 76%);
+}
+
+.footer-card::after,
+.footer-shell::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: calc(var(--radius-lg) - 1px);
+  pointer-events: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86), inset 0 -1px 0 rgba(78, 62, 43, 0.06);
 }
 
 .footer-top,
@@ -48,8 +72,10 @@
 }
 
 .footer-word {
+  position: relative;
+  z-index: 1;
   margin: 0;
-  line-height: 0.74;
+  line-height: 0.78;
   user-select: none;
 }
 
@@ -57,45 +83,61 @@
   display: block;
   width: 100%;
   color: transparent;
-  font-size: clamp(7.5rem, 27.5vw, 22rem);
+  font-size: clamp(5.9rem, 21vw, 16.5rem);
   font-weight: 950;
-  letter-spacing: -0.13em;
+  letter-spacing: -0.12em;
   text-transform: none;
   background-image:
-    radial-gradient(circle, rgba(246, 239, 228, 0.96) 0 2px, transparent 2.35px),
-    linear-gradient(90deg, rgba(64, 148, 183, 0.2), rgba(215, 166, 75, 0.14), rgba(246, 239, 228, 0.08));
-  background-size: 13px 13px, 220% 100%;
+    radial-gradient(circle, rgba(23, 19, 15, 0.42) 0 1.45px, transparent 1.75px),
+    linear-gradient(90deg, rgba(23, 19, 15, 0.18), rgba(64, 148, 183, 0.18), rgba(215, 166, 75, 0.14));
+  background-size: 10px 10px, 220% 100%;
   background-position: 0 0, 0 50%;
   -webkit-background-clip: text;
   background-clip: text;
-  filter: drop-shadow(0 0 22px rgba(255, 255, 255, 0.055));
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.34));
   transition: letter-spacing 0.35s ease, transform 0.35s ease, filter 0.35s ease;
 }
 
 .footer-card:hover .footer-word span,
 .footer-shell:hover .footer-word span {
-  letter-spacing: -0.115em;
-  transform: translateY(-4px);
-  filter: drop-shadow(0 0 30px rgba(64, 148, 183, 0.18));
+  letter-spacing: -0.108em;
+  transform: translateY(-3px);
+  filter: drop-shadow(0 0 24px rgba(64, 148, 183, 0.16));
   animation: footer-pixel-drift 2.8s steps(8, end) infinite alternate;
 }
 
 .footer-bottom {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 18px;
   align-items: center;
-  margin-top: 12px;
+  margin-top: 18px;
   padding-top: 0;
-  border-top: 0;
-  color: rgba(246, 239, 228, 0.74);
-  font-size: 0.88rem;
-  font-weight: 680;
+  border: 0;
+  color: #4f463c;
+  font-size: 0.9rem;
+  font-weight: 720;
+}
+
+.footer-bottom > span:first-child {
+  width: fit-content;
+  padding: 8px 11px;
+  border: 1px solid rgba(78, 62, 43, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 250, 242, 0.56);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.footer-bottom > span:last-child {
+  justify-self: end;
+  text-align: right;
 }
 
 .footer-dawnlight {
   color: transparent;
-  background: linear-gradient(95deg, #3eb6d0, #f0ddae, #c8912d, #3eb6d0);
+  background: linear-gradient(95deg, #4094b7, #f0ddae, #c8912d, #4094b7);
   background-size: 260% 100%;
   -webkit-background-clip: text;
   background-clip: text;
@@ -121,17 +163,18 @@
 
 @keyframes footer-pixel-drift {
   from { background-position: 0 0, 0 50%; }
-  to { background-position: 13px 9px, 100% 50%; }
+  to { background-position: 10px 7px, 100% 50%; }
 }
 
 @media (max-width: 820px) {
-  .site-footer { margin-top: 74px; }
+  footer.site-footer { margin-top: 68px !important; padding-bottom: 38px !important; }
   .footer-card,
   .footer-shell { padding: 22px 18px; }
-  .footer-bottom { grid-template-columns: 1fr; }
-  .footer-word span { font-size: clamp(6.2rem, 33vw, 13rem); }
+  .footer-bottom { grid-template-columns: 1fr; gap: 10px; }
+  .footer-bottom > span:last-child { justify-self: start; text-align: left; }
+  .footer-word span { font-size: clamp(5.5rem, 31vw, 11.5rem); }
 }
 
 @media (max-width: 560px) {
-  .footer-word span { font-size: clamp(5.3rem, 35vw, 8rem); }
+  .footer-word span { font-size: clamp(4.7rem, 34vw, 7.4rem); }
 }
