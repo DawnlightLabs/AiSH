@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="amaansyed27/aish"
+REPO="DawnlightLabs/AiSH"
 VERSION="${AISH_VERSION:-latest}"
 INSTALL_ROOT="${AISH_INSTALL_ROOT:-$HOME/.local/aish}"
 BIN_DIR="$INSTALL_ROOT/bin"
