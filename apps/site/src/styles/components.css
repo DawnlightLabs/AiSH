@@ -116,3 +116,39 @@ code { flex: 1; min-width: 0; color: #fff7eb; font-family: "SFMono-Regular", Con
 .cta-card { padding: clamp(28px, 6vw, 64px); border-radius: var(--radius-lg); background: radial-gradient(circle at 82% 30%, rgba(219,199,164,.28), transparent 28%), var(--panel); }
 .cta-card h2 { max-width: 760px; margin: 0; font-size: clamp(2.4rem, 6vw, 5rem); line-height: 1; letter-spacing: -.068em; }
 .cta-card p { max-width: 680px; margin: 20px 0 0; color: var(--muted); line-height: 1.7; }
+
+/* pixel-hover-override:start */
+
+.logo-card:hover .hero-logo-lockup {
+  transform: translateY(-3px) scale(1.016);
+  filter: drop-shadow(0 18px 42px rgba(74, 56, 34, 0.16));
+}
+
+.logo-card::after {
+  content: "";
+  position: absolute;
+  right: 26px;
+  top: 34px;
+  width: 6px;
+  height: 6px;
+  opacity: 0;
+  pointer-events: none;
+  background: #1f1914;
+  box-shadow:
+    6px 0 0 #1f1914,
+    12px 0 0 #1f1914,
+    0 6px 0 #1f1914,
+    12px 6px 0 #1f1914,
+    0 12px 0 #1f1914,
+    6px 12px 0 rgba(230, 184, 93, 0.98),
+    12px 12px 0 #1f1914,
+    6px 18px 0 #1f1914;
+  transition: opacity .18s ease;
+}
+
+.logo-card:hover::after {
+  opacity: 1;
+  animation: pixel-hop 2.2s steps(8) infinite;
+}
+
+/* pixel-hover-override:end */

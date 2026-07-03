@@ -35,3 +35,24 @@
   *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
   .reveal { opacity: 1; transform: none; filter: none; }
 }
+
+/* footer-motion-override:start */
+
+@keyframes footer-flow {
+  0% { background-position: 0% 50%; transform: translateX(-1%); }
+  100% { background-position: 200% 50%; transform: translateX(1%); }
+}
+
+@keyframes pixel-hop {
+  0%   { transform: translate(0px, 0px) scale(1); }
+  12%  { transform: translate(28px, -10px) scale(1); }
+  24%  { transform: translate(70px, -22px) scale(1.02); }
+  36%  { transform: translate(116px, -36px) scale(1); }
+  48%  { transform: translate(170px, -48px) scale(1.02); }
+  60%  { transform: translate(226px, -38px) scale(1); }
+  72%  { transform: translate(286px, -26px) scale(1.03); }
+  84%  { transform: translate(350px, -14px) scale(1); }
+  100% { transform: translate(408px, -6px) scale(1); }
+}
+
+/* footer-motion-override:end */

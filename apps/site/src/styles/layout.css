@@ -147,3 +147,184 @@ footer::before {
   footer::before { text-align: left; font-size: clamp(6rem, 38vw, 12rem); }
   .footer-inner { align-items: flex-start; border-radius: 26px; flex-direction: column; }
 }
+
+/* footer-redesign-override:start */
+
+footer {
+  position: relative;
+  margin-top: 84px;
+  padding: 104px 0 44px;
+  border-top: none !important;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 8% 84%, rgba(76, 158, 196, 0.17), transparent 24rem),
+    radial-gradient(circle at 82% 14%, rgba(224, 183, 95, 0.18), transparent 20rem),
+    linear-gradient(180deg, rgba(248, 242, 232, 0), rgba(241, 233, 219, 0.94) 24%, rgba(233, 223, 206, 0.98));
+}
+
+footer::before {
+  content: "AiSH";
+  display: block;
+  width: min(calc(100% - 36px), var(--max-width));
+  margin: 0 auto;
+  font-size: clamp(7rem, 24vw, 19rem);
+  line-height: 0.78;
+  font-weight: 950;
+  letter-spacing: -0.11em;
+  text-align: center;
+  color: transparent;
+  background:
+    linear-gradient(90deg,
+      rgba(32, 26, 21, 0.08) 0%,
+      rgba(32, 26, 21, 0.16) 20%,
+      rgba(255, 255, 255, 0.46) 33%,
+      rgba(32, 26, 21, 0.12) 52%,
+      rgba(208, 170, 88, 0.22) 68%,
+      rgba(32, 26, 21, 0.12) 100%);
+  background-size: 180% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: drop-shadow(0 1px 0 rgba(255,255,255,0.4));
+  opacity: 0.9;
+  transition: transform .35s ease, letter-spacing .35s ease, filter .35s ease;
+}
+
+footer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -12%;
+  width: 124%;
+  height: 8px;
+  background:
+    linear-gradient(90deg,
+      rgba(69, 152, 190, 0) 0%,
+      rgba(69, 152, 190, 0.8) 18%,
+      rgba(255, 255, 255, 0.95) 34%,
+      rgba(228, 182, 90, 0.9) 50%,
+      rgba(69, 152, 190, 0.85) 67%,
+      rgba(69, 152, 190, 0) 100%);
+  background-size: 200% 100%;
+  filter: blur(0.5px) drop-shadow(0 6px 16px rgba(80, 155, 193, 0.24));
+  opacity: 0.9;
+  animation: footer-flow 7s linear infinite;
+}
+
+.footer-inner {
+  position: relative;
+  z-index: 2;
+  width: min(calc(100% - 36px), var(--max-width));
+  margin: 18px auto 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 24px;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.footer-inner::before {
+  content: "";
+  position: absolute;
+  left: clamp(8px, 12vw, 140px);
+  top: -44px;
+  width: 7px;
+  height: 7px;
+  pointer-events: none;
+  opacity: 0;
+  background: #2d251d;
+  box-shadow:
+    7px 0 0 #2d251d,
+    14px 0 0 #2d251d,
+    0 7px 0 #2d251d,
+    14px 7px 0 #2d251d,
+    0 14px 0 #2d251d,
+    7px 14px 0 rgba(233, 186, 94, 0.95),
+    14px 14px 0 #2d251d,
+    7px 21px 0 #2d251d;
+  transition: opacity .22s ease;
+}
+
+footer:hover::before {
+  transform: translateY(-6px) scale(1.015);
+  letter-spacing: -0.095em;
+  filter: drop-shadow(0 10px 24px rgba(214, 171, 85, 0.12));
+}
+
+footer:hover .footer-inner::before {
+  opacity: 1;
+  animation: pixel-hop 2.4s steps(8) infinite;
+}
+
+.footer-inner span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 0;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.footer-inner span:first-child {
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(90, 73, 50, 0.12);
+  color: #40372f;
+  background:
+    linear-gradient(105deg,
+      rgba(64, 148, 183, 0.22),
+      rgba(255, 255, 255, 0.5),
+      rgba(215, 166, 75, 0.26));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.72),
+    0 10px 30px rgba(72,55,34,0.08);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  font-weight: 750;
+}
+
+.footer-inner span:last-child {
+  justify-self: end;
+  padding-bottom: 2px;
+  color: #4f463c;
+  font-weight: 780;
+  font-size: clamp(0.96rem, 1.8vw, 1.15rem);
+  letter-spacing: -0.02em;
+  text-align: right;
+}
+
+@media (max-width: 760px) {
+  footer {
+    margin-top: 68px;
+    padding: 84px 0 30px;
+  }
+
+  footer::before {
+    text-align: left;
+    font-size: clamp(5.5rem, 34vw, 10rem);
+  }
+
+  .footer-inner {
+    margin-top: 14px;
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .footer-inner span:last-child {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .footer-inner::before {
+    left: auto;
+    right: 22px;
+    top: -28px;
+  }
+}
+
+/* footer-redesign-override:end */
