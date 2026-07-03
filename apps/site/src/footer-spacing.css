@@ -1,0 +1,22 @@
+footer.site-footer {
+  margin-top: 56px;
+  padding-top: 110px;
+}
+
+footer.site-footer::before {
+  top: 12%;
+  right: -34%;
+  height: 132%;
+  opacity: 0.48;
+}
+
+footer.site-footer::after {
+  opacity: 0.12;
+}
+
+@media (max-width: 760px) {
+  footer.site-footer {
+    margin-top: 38px;
+    padding-top: 94px;
+  }
+}
