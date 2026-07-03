@@ -8,5 +8,6 @@ import './hero-glitch.css';
 import './install-floaters.css';
 import './footer-edge.css';
 import './downloads-page.css';
+import './final-fix.css';
 
 createRoot(document.getElementById('root')).render(<App />);
