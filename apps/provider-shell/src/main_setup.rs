@@ -1,5 +1,6 @@
 mod logging;
 mod setup;
+mod updater;
 
 use aish_ai::ModelProfile;
 use aish_completion::demo_suggestions;
@@ -36,6 +37,9 @@ struct ProviderState {
 
 fn main() {
     setup::handle_setup_args();
+    if updater::handle_update_args() {
+        return;
+    }
     install_prompt_env();
 
     let mut state = ProviderState {
@@ -46,6 +50,7 @@ fn main() {
     setup::ensure_model(&state.profile);
 
     println!("AiSH provider shell");
+    println!("version: {}", updater::current_version());
     println!("{COPYRIGHT}");
     println!(
         "Mode: {}. Type /mode normal, /mode ai, commands, natural language, or /help.",
@@ -105,6 +110,12 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
         "/exit" | "/quit" => return true,
         "/help" => print_help(),
         "/setup" | "/install" => setup::run_interactive_install(false),
+        "/update" => {
+            if updater::run_update_flow() {
+                return true;
+            }
+        }
+        "/version" => updater::print_version(),
         "/ai" => set_mode(state, ProviderInputMode::AiRun),
         "/normal" => set_mode(state, ProviderInputMode::Normal),
         "/mode" => match parts.next() {
@@ -140,35 +151,7 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
                 ),
             },
         },
-        "/status" => {
-            let settings = logging::read_settings();
-            println!("creator: {CREATOR}");
-            println!("copyright: {COPYRIGHT}");
-            println!("mode: {}", describe_provider_mode(&state.session.mode));
-            println!(
-                "context: {}",
-                describe_context_mode(&state.session.context_mode)
-            );
-            println!("pending_approval: {}", state.pending.is_some());
-            println!("session_commands: {}", state.session.command_memory.len());
-            println!("os: {}", env::consts::OS);
-            println!("shell: {}", shell_name());
-            println!("model: {}", state.profile.label);
-            println!("model_path: {}", state.profile.model_path);
-            println!("llama_cli: {}", state.profile.llama_cli_path);
-            println!(
-                "command_log_policy: {}",
-                logging::describe_policy(&settings.command_log_policy)
-            );
-            println!(
-                "command_log_path: {}",
-                logging::command_log_path().display()
-            );
-            println!(
-                "crash_log_sharing_opt_in: {}",
-                settings.crash_log_sharing_opt_in
-            );
-        }
+        "/status" => print_status(state),
         "/logs" => match parts.next() {
             None => {
                 let settings = logging::read_settings();
@@ -241,58 +224,82 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             }
             _ => println!(
                 "full working trace: {}",
-                if state.session.show_trace {
-                    "on"
-                } else {
-                    "off"
-                }
+                if state.session.show_trace { "on" } else { "off" }
             ),
         },
-        "/approve" => {
-            if let Some(pending) = state.pending.take() {
-                println!("approved: {} ({})", pending.command, pending.risk);
-                println!("reason: {}", pending.reason);
-                let ok = run_shell_command(&pending.command);
-                logging::record_command(
-                    pending.intent.as_deref(),
-                    Some(&pending.command),
-                    if ok { "success" } else { "failed" },
-                    Some(&pending.risk),
-                    Some(&pending.reason),
-                    if ok {
-                        None
-                    } else {
-                        Some("command exited unsuccessfully")
-                    },
-                );
-                state.session.record_command(
-                    pending.intent.as_deref(),
-                    &pending.command,
-                    if ok { "success" } else { "failed" },
-                    Some(&pending.reason),
-                );
-            } else {
-                println!("no pending command");
-            }
-        }
-        "/cancel" => {
-            if let Some(pending) = state.pending.take() {
-                logging::record_command(
-                    pending.intent.as_deref(),
-                    Some(&pending.command),
-                    "cancelled",
-                    Some(&pending.risk),
-                    Some(&pending.reason),
-                    None,
-                );
-                println!("pending command cancelled");
-            } else {
-                println!("no pending command");
-            }
-        }
+        "/approve" => approve_pending(state),
+        "/cancel" => cancel_pending(state),
         _ => println!("unknown slash command. Try /help."),
     }
     false
+}
+
+fn print_status(state: &ProviderState) {
+    let settings = logging::read_settings();
+    println!("creator: {CREATOR}");
+    println!("copyright: {COPYRIGHT}");
+    println!("version: {}", updater::current_version());
+    println!("mode: {}", describe_provider_mode(&state.session.mode));
+    println!(
+        "context: {}",
+        describe_context_mode(&state.session.context_mode)
+    );
+    println!("pending_approval: {}", state.pending.is_some());
+    println!("session_commands: {}", state.session.command_memory.len());
+    println!("os: {}", env::consts::OS);
+    println!("shell: {}", shell_name());
+    println!("model: {}", state.profile.label);
+    println!("model_path: {}", state.profile.model_path);
+    println!("llama_cli: {}", state.profile.llama_cli_path);
+    println!(
+        "command_log_policy: {}",
+        logging::describe_policy(&settings.command_log_policy)
+    );
+    println!("command_log_path: {}", logging::command_log_path().display());
+    println!(
+        "crash_log_sharing_opt_in: {}",
+        settings.crash_log_sharing_opt_in
+    );
+}
+
+fn approve_pending(state: &mut ProviderState) {
+    if let Some(pending) = state.pending.take() {
+        println!("approved: {} ({})", pending.command, pending.risk);
+        println!("reason: {}", pending.reason);
+        let ok = run_shell_command(&pending.command);
+        logging::record_command(
+            pending.intent.as_deref(),
+            Some(&pending.command),
+            if ok { "success" } else { "failed" },
+            Some(&pending.risk),
+            Some(&pending.reason),
+            if ok { None } else { Some("command exited unsuccessfully") },
+        );
+        state.session.record_command(
+            pending.intent.as_deref(),
+            &pending.command,
+            if ok { "success" } else { "failed" },
+            Some(&pending.reason),
+        );
+    } else {
+        println!("no pending command");
+    }
+}
+
+fn cancel_pending(state: &mut ProviderState) {
+    if let Some(pending) = state.pending.take() {
+        logging::record_command(
+            pending.intent.as_deref(),
+            Some(&pending.command),
+            "cancelled",
+            Some(&pending.risk),
+            Some(&pending.reason),
+            None,
+        );
+        println!("pending command cancelled");
+    } else {
+        println!("no pending command");
+    }
 }
 
 fn print_help() {
@@ -305,6 +312,8 @@ fn print_help() {
     println!("  /complete [prefix]     show shared command completions");
     println!("  /model                 show current model");
     println!("  /model list            list enabled models");
+    println!("  /version               show installed AiSH version");
+    println!("  /update                check latest release and install after approval");
     println!("  /status                show provider status");
     println!("  /setup                 run setup wizard");
     println!("  /logs                  show local command log settings");
@@ -411,11 +420,7 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 if ok { "success" } else { "failed" },
                 Some(risk_label(&plan.risk)),
                 Some(&plan.reason),
-                if ok {
-                    None
-                } else {
-                    Some("command exited unsuccessfully")
-                },
+                if ok { None } else { Some("command exited unsuccessfully") },
             );
             state.session.record_command(
                 Some(&plan.intent),
@@ -455,11 +460,7 @@ fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
         if ok { "success" } else { "failed" },
         Some("user"),
         Some("User-entered command."),
-        if ok {
-            None
-        } else {
-            Some("command exited unsuccessfully")
-        },
+        if ok { None } else { Some("command exited unsuccessfully") },
     );
     state.session.record_command(
         None,
@@ -564,52 +565,10 @@ fn looks_like_direct_command(input: &str) -> bool {
         .unwrap_or_default()
         .to_lowercase();
     let direct = [
-        "cd",
-        "dir",
-        "ls",
-        "pwd",
-        "cat",
-        "type",
-        "echo",
-        "clear",
-        "cls",
-        "git",
-        "npm",
-        "pnpm",
-        "yarn",
-        "bun",
-        "node",
-        "python",
-        "pip",
-        "cargo",
-        "go",
-        "docker",
-        "kubectl",
-        "where",
-        "which",
-        "grep",
-        "find",
-        "rm",
-        "rmdir",
-        "del",
-        "erase",
-        "unlink",
-        "shred",
-        "mv",
-        "cp",
-        "mkdir",
-        "touch",
-        "remove-item",
-        "clear-content",
-        "move-item",
-        "rename-item",
-        "copy-item",
-        "set-content",
-        "add-content",
-        "out-file",
-        "get-childitem",
-        "get-location",
-        "select-string",
+        "cd", "dir", "ls", "pwd", "cat", "type", "echo", "clear", "cls", "git", "npm",
+        "pnpm", "yarn", "bun", "node", "python", "pip", "cargo", "go", "docker",
+        "kubectl", "where", "which", "grep", "find", "mkdir", "touch", "get-childitem",
+        "get-location", "select-string",
     ];
     direct.contains(&first.as_str()) || input.contains('|') || input.contains("&&")
 }
