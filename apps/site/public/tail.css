@@ -1,0 +1,20 @@
+.page-shell + * {
+  margin-top: 56px !important;
+  padding-top: 110px !important;
+}
+
+.page-shell + *::before {
+  top: 12% !important;
+  opacity: 0.48 !important;
+}
+
+.page-shell + *::after {
+  opacity: 0.12 !important;
+}
+
+@media (max-width: 760px) {
+  .page-shell + * {
+    margin-top: 38px !important;
+    padding-top: 94px !important;
+  }
+}
