@@ -95,6 +95,19 @@ jobs:
           chmod +x dist/aish
           tar -czf "${{ matrix.artifact }}" -C dist aish
 
+      - name: Checksum Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash ${{ matrix.artifact }} -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}" | Set-Content "${{ matrix.artifact }}.sha256"
+
+      - name: Checksum Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
@@ -103,7 +116,9 @@ jobs:
           make_latest: ${{ env.MAKE_LATEST }}
           prerelease: ${{ env.PRERELEASE }}
           generate_release_notes: true
-          files: ${{ matrix.artifact }}
+          files: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

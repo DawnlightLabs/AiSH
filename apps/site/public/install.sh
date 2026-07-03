@@ -41,6 +41,20 @@ mkdir -p "$BIN_DIR"
 
 echo "Downloading AiSH from $url"
 curl -fsSL "$url" -o "$tmp/aish.tar.gz"
+
+checksum_url="${url}.sha256"
+if curl -fsSL "$checksum_url" -o "$tmp/aish.tar.gz.sha256"; then
+  expected="$(awk '{print $1}' "$tmp/aish.tar.gz.sha256")"
+  actual="$(shasum -a 256 "$tmp/aish.tar.gz" | awk '{print $1}')"
+  if [ "$expected" != "$actual" ]; then
+    echo "Checksum mismatch for $asset" >&2
+    exit 1
+  fi
+  echo "Verified SHA256: $actual"
+else
+  echo "Warning: checksum unavailable for $asset" >&2
+fi
+
 tar -xzf "$tmp/aish.tar.gz" -C "$tmp"
 
 found="$(find "$tmp" -type f -name aish | head -n 1)"

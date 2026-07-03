@@ -29,7 +29,7 @@ pub fn handle_setup_args() {
     }
 
     if args.iter().any(|arg| arg == "--setup") || args.iter().any(|arg| arg == "--install") {
-        run_setup_wizard(true);
+        run_interactive_install(true);
     }
 }
 
@@ -152,7 +152,7 @@ fn install_provider_binary(install_dir: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-pub fn run_setup_wizard(exit_after: bool) {
+pub fn run_interactive_install(exit_after: bool) {
     println!("AiSH install");
     println!("Shell provider runtime is required.");
     let install_dir = prompt_with_default(
@@ -368,14 +368,7 @@ fn add_provider_to_path(bin_dir: &Path) -> Result<(), String> {
             format!("{current};{bin}")
         };
 
-        let status = Command::new("setx")
-            .args(["PATH", &next])
-            .status()
-            .map_err(|error| error.to_string())?;
-
-        if !status.success() {
-            return Err("setx PATH failed".to_string());
-        }
+        set_windows_user_env("Path", &next)?;
 
         println!("[✓] Add aish.exe to PATH");
         println!("    Open a new terminal window for PATH changes to take effect.");
@@ -392,15 +385,33 @@ fn add_provider_to_path(bin_dir: &Path) -> Result<(), String> {
     }
 }
 
+fn set_windows_user_env(name: &str, value: &str) -> Result<(), String> {
+    let script = format!(
+        "[Environment]::SetEnvironmentVariable('{}', $args[0], 'User')",
+        name.replace("'", "''")
+    );
+    let status = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+            value,
+        ])
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err(format!(
+            "failed to persist user environment variable {name}"
+        ));
+    }
+    Ok(())
+}
+
 fn persist_env_var(name: &str, value: &str) -> Result<(), String> {
     if cfg!(target_os = "windows") {
-        let status = Command::new("setx")
-            .args([name, value])
-            .status()
-            .map_err(|error| error.to_string())?;
-        if !status.success() {
-            return Err(format!("setx {name} failed"));
-        }
+        set_windows_user_env(name, value)?;
     } else {
         let shell_profile = shell_profile_path();
         let line = format!("export {name}=\"{value}\"");
@@ -427,7 +438,7 @@ fn add_windows_terminal_profile(provider_path: &Path, make_default: bool) -> Res
         let mut json: serde_json::Value = serde_json::from_str(&text)
             .map_err(|error| format!("failed to parse {}: {error}", settings_path.display()))?;
 
-        let profile_guid = "{8f6d930e-7f49-4bd8-9d29-aish00000001}";
+        let profile_guid = "{8f6d930e-7f49-4bd8-9d29-a15000000001}";
         let commandline = provider_path.display().to_string();
 
         let profiles = json
@@ -557,6 +568,10 @@ fn windows_terminal_settings_paths() -> Vec<PathBuf> {
             .join("Packages")
             .join("Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe")
             .join("LocalState")
+            .join("settings.json"),
+        local
+            .join("Microsoft")
+            .join("Windows Terminal")
             .join("settings.json"),
     ]
 }

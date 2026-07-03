@@ -36,6 +36,20 @@ $extract = Join-Path ([System.IO.Path]::GetTempPath()) "aish-install-$arch"
 Write-Host "Downloading AiSH from $url"
 Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
 
+$checksumUrl = "$url.sha256"
+$checksumFile = "$tmp.sha256"
+try {
+  Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumFile -UseBasicParsing
+  $expected = ((Get-Content $checksumFile -Raw).Trim() -split "\s+")[0].ToLower()
+  $actual = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
+  if ($expected -ne $actual) {
+    throw "checksum mismatch for $asset"
+  }
+  Write-Host "Verified SHA256: $actual"
+} catch {
+  Write-Warning "Could not verify release checksum: $_"
+}
+
 if (Test-Path $extract) {
   Remove-Item $extract -Recurse -Force
 }

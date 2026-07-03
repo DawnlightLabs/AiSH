@@ -104,7 +104,7 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
     match parts.next().unwrap_or_default() {
         "/exit" | "/quit" => return true,
         "/help" => print_help(),
-        "/setup" => setup::run_setup_wizard(false),
+        "/setup" | "/install" => setup::run_interactive_install(false),
         "/ai" => set_mode(state, ProviderInputMode::AiRun),
         "/normal" => set_mode(state, ProviderInputMode::Normal),
         "/mode" => match parts.next() {

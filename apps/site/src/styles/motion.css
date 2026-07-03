@@ -1,0 +1,37 @@
+@keyframes ambient-drift { from { transform: translate3d(-2%, 0, 0) scale(1); opacity: .7; } to { transform: translate3d(2%, -3%, 0) scale(1.05); opacity: 1; } }
+@keyframes page-in { from { opacity: 0; transform: translateY(20px) scale(.992); filter: blur(10px); } to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); } }
+@keyframes liquid-sheen { 0%, 42% { transform: translateX(-130%); opacity: 0; } 52% { opacity: 1; } 77%, 100% { transform: translateX(130%); opacity: 0; } }
+@keyframes liquid-float { 0% { transform: translate3d(0,0,0) rotate(0); } 50% { transform: translate3d(0,-10px,0) rotate(.45deg); } 100% { transform: translate3d(0,0,0) rotate(0); } }
+@keyframes orbit-drift { from { transform: rotate(-12deg) scale(.96); opacity: .46; } to { transform: rotate(8deg) scale(1.03); opacity: .72; } }
+@keyframes tab-in { from { opacity: 0; transform: translateY(10px); filter: blur(8px); } to { opacity: 1; transform: translateY(0); filter: blur(0); } }
+@keyframes glass-sweep { to { transform: translateX(130%); } }
+
+.installer::before,
+.feature-card::before,
+.cta-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(118deg, transparent 0%, rgba(255,255,255,.02) 24%, rgba(255,255,255,.68) 40%, rgba(210,176,101,.16) 47%, transparent 60%);
+  transform: translateX(-130%);
+}
+.installer:hover::before,
+.feature-card:hover::before,
+.cta-card:hover::before { animation: glass-sweep 1.05s ease both; }
+
+.reveal {
+  opacity: 0;
+  transform: translateY(34px) scale(.985);
+  filter: blur(10px);
+  transition:
+    opacity .76s ease var(--reveal-delay, 0ms),
+    transform .76s cubic-bezier(.2,.86,.2,1) var(--reveal-delay, 0ms),
+    filter .76s ease var(--reveal-delay, 0ms);
+}
+.reveal.is-visible { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
+  .reveal { opacity: 1; transform: none; filter: none; }
+}

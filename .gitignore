@@ -1,15 +1,11 @@
-# Node
+# Node / Vite
 node_modules/
+apps/site/dist/
 dist/
 .vite/
 
 # Rust
 /target/
-Cargo.lock
-
-# Tauri
-apps/desktop/src-tauri/target/
-apps/desktop/src-tauri/gen/
 
 # OS / editors
 .DS_Store
@@ -17,6 +13,13 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local runtime
+# Local runtime and model artifacts
 .aish/
 models/*.gguf
+*.gguf
+*.gguf.part
+
+# Local env
+.env
+.env.*
+!.env.example

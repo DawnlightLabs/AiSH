@@ -1,0 +1,22 @@
+:root {
+  color-scheme: light;
+  --bg: #f4efe6;
+  --paper: #fbf7ef;
+  --panel: rgba(255, 250, 242, 0.58);
+  --panel-strong: rgba(255, 252, 246, 0.74);
+  --text: #17130f;
+  --muted: #756c60;
+  --line: rgba(78, 62, 43, 0.14);
+  --line-strong: rgba(78, 62, 43, 0.24);
+  --ink: #111111;
+  --white: #ffffff;
+  --gold: #d7a64b;
+  --blue: #4094b7;
+  --shadow: 0 28px 95px rgba(72, 55, 34, 0.18);
+  --glass-shadow: 0 24px 80px rgba(72, 55, 34, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  --radius-lg: 30px;
+  --radius-md: 18px;
+  --radius-sm: 12px;
+  --max-width: 1180px;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
