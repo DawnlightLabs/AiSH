@@ -79,6 +79,7 @@ jobs:
         with:
           files: |
             apps/site/public/install
+            apps/site/public/install.sh
             apps/site/public/install.ps1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
