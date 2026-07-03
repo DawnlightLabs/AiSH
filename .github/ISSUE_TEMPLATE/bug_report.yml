@@ -1,0 +1,73 @@
+name: Bug report
+description: Report a reproducible problem in AiSH
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Provide enough detail for maintainers to reproduce it.
+  - type: input
+    id: version
+    attributes:
+      label: AiSH version or commit
+      description: Use a release version, commit SHA, or branch name.
+      placeholder: "v0.0.0 / main@abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: shell
+    attributes:
+      label: Shell / terminal
+      placeholder: "PowerShell 7, Windows Terminal, VS Code terminal, bash, zsh, Terminal.app"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: List exact commands and actions.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or workflow output
+      description: Remove secrets, tokens, private paths, and personal data before posting.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include installer method, release artifact, model path, or shell profile details when relevant.
+    validations:
+      required: false
