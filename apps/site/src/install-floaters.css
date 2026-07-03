@@ -2,120 +2,59 @@
   position: relative;
 }
 
-.install .section-heading {
-  position: static;
-  z-index: 2;
-}
-
-.install .section-heading h2,
-.install .section-heading p {
-  position: relative;
-  z-index: 2;
-}
-
-.install .container::before,
-.install .container::after,
-.install .section-heading::after {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  width: clamp(50px, 4.6vw, 66px);
-  height: clamp(78px, 7vw, 98px);
-  pointer-events: none;
-  transform-origin: 50% 0;
-  opacity: 0.58;
-  background:
-    linear-gradient(rgba(78, 62, 43, 0.2), rgba(78, 62, 43, 0.06)) 50% 0 / 1px 34% no-repeat,
-    radial-gradient(circle at 50% 68%, rgba(255, 255, 255, 0.84), rgba(255, 250, 242, 0.62) 58%, rgba(239, 231, 217, 0.46) 100%) 50% 100% / 74% 52% no-repeat,
-    var(--os-icon) 50% 81% / 32% 23% no-repeat;
-  filter: drop-shadow(0 12px 24px rgba(72, 55, 34, 0.1));
-  animation: os-dangle var(--os-speed, 4.8s) ease-in-out infinite;
-  animation-delay: var(--os-delay, 0s);
-}
-
-.install .container::before {
-  --os-icon: url('/os/windows.svg');
-  --os-speed: 4.6s;
-  --os-delay: -0.4s;
-  top: clamp(4px, 1.1vw, 18px);
-  right: clamp(260px, 25vw, 370px);
-}
-
-.install .container::after {
-  --os-icon: url('/os/apple.svg');
-  --os-speed: 5.2s;
-  --os-delay: -1.2s;
-  top: clamp(-14px, -0.7vw, 2px);
-  right: clamp(160px, 16vw, 250px);
-}
-
-.install .section-heading::after {
-  --os-icon: url('/os/linux.svg');
-  --os-speed: 4.9s;
-  --os-delay: -2s;
-  top: clamp(4px, 1.2vw, 20px);
-  right: clamp(60px, 7vw, 120px);
-}
-
+.install .section-heading,
 .install .installer {
   position: relative;
   z-index: 1;
 }
 
-.install .container:hover::before,
-.install .container:hover::after,
-.install .container:hover .section-heading::after {
-  opacity: 0.82;
-  animation-duration: 2.4s;
+.installer-tabs .tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
 
-@keyframes os-dangle {
-  0%, 100% { transform: translateY(0) rotate(-4deg); }
-  25% { transform: translateY(-9px) rotate(4deg); }
-  50% { transform: translateY(3px) rotate(6deg); }
-  75% { transform: translateY(-5px) rotate(-3deg); }
+.installer-tabs .tab::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  flex: 0 0 18px;
+  background: currentColor;
+  opacity: 0.72;
+  transform: translateY(-1px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  -webkit-mask: var(--os-icon) center / contain no-repeat;
+  mask: var(--os-icon) center / contain no-repeat;
 }
 
-@media (max-width: 900px) {
-  .install .container::before,
-  .install .container::after,
-  .install .section-heading::after {
-    opacity: 0.32;
-    width: 46px;
-    height: 78px;
-  }
+.installer-tabs .tab:nth-child(1)::before {
+  --os-icon: url('/os/windows.svg');
+}
 
-  .install .container::before {
-    right: 138px;
-    top: -8px;
-  }
+.installer-tabs .tab:nth-child(2)::before {
+  --os-icon: url('/os/apple.svg');
+}
 
-  .install .container::after {
-    right: 76px;
-    top: -20px;
-  }
+.installer-tabs .tab:nth-child(3)::before {
+  --os-icon: url('/os/linux.svg');
+}
 
-  .install .section-heading::after {
-    right: 14px;
-    top: -8px;
-  }
+.installer-tabs .tab.active::before,
+.installer-tabs .tab:hover::before {
+  opacity: 1;
+  transform: translateY(-1px) scale(1.06);
 }
 
 @media (max-width: 650px) {
-  .install .container::before,
-  .install .container::after,
-  .install .section-heading::after {
-    display: none;
+  .installer-tabs .tab {
+    gap: 7px;
   }
-}
 
-@media (prefers-reduced-motion: reduce) {
-  .install .container::before,
-  .install .container::after,
-  .install .section-heading::after,
-  .install .container:hover::before,
-  .install .container:hover::after,
-  .install .container:hover .section-heading::after {
-    animation: none;
+  .installer-tabs .tab::before {
+    width: 16px;
+    height: 16px;
+    flex-basis: 16px;
   }
 }
