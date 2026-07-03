@@ -320,82 +320,6 @@
   opacity: 0 !important;
 }
 
-.footer-shell {
-  min-height: 540px !important;
-  display: flex !important;
-  flex-direction: column !important;
-  align-items: center !important;
-  justify-content: center !important;
-  text-align: center !important;
-  gap: 26px !important;
-  background: linear-gradient(180deg, rgba(249, 242, 231, 0), rgba(232, 220, 201, 0.38)) !important;
-}
-
-.footer-word {
-  width: 100% !important;
-  margin: 0 auto !important;
-  display: flex !important;
-  justify-content: center !important;
-}
-
-.footer-word span,
-.footer-word::before,
-.footer-word::after {
-  left: 50% !important;
-  right: auto !important;
-  transform: translateX(-50%) !important;
-  width: max-content !important;
-  text-align: center !important;
-}
-
-.footer-word::before,
-.footer-word::after {
-  inset: 0 auto auto 50% !important;
-}
-
-.footer-shell:hover .footer-word span {
-  transform: translateX(-50%) !important;
-}
-
-.footer-bottom {
-  display: flex !important;
-  flex-wrap: wrap !important;
-  justify-content: center !important;
-  align-items: center !important;
-  gap: 10px 24px !important;
-  width: min(100%, 960px) !important;
-  margin: 0 auto !important;
-  text-align: center !important;
-}
-
-.footer-bottom::before {
-  content: "";
-  flex-basis: 100%;
-  width: min(48vw, 500px);
-  min-width: 260px;
-  height: clamp(118px, 13vw, 170px);
-  margin: -2px auto 8px;
-  opacity: 0.18;
-  background-image:
-    radial-gradient(circle, #f9d66a 0 46%, #d49d3a 68%, #a66f25 100%),
-    radial-gradient(ellipse at 50% 124%, transparent 0 61%, #0e4f7b 61.5% 64.5%, #092f4f 65%, transparent 66%);
-  background-repeat: no-repeat;
-  background-size: clamp(130px, 22vw, 245px) clamp(130px, 22vw, 245px), 100% 100%;
-  background-position: 50% 124%, 50% 0;
-  filter: drop-shadow(0 18px 28px rgba(72, 55, 34, 0.08));
-  transition: background-position 1.35s cubic-bezier(0.16, 0.9, 0.2, 1), opacity 0.8s ease;
-}
-
-.footer-shell.is-visible .footer-bottom::before {
-  opacity: 1;
-  background-position: 50% 48%, 50% 0;
-}
-
-.footer-bottom > span:last-child {
-  justify-self: center !important;
-  text-align: center !important;
-}
-
 @media (max-width: 900px) {
   .downloads-container {
     width: min(calc(100% - 36px), 1180px);
@@ -486,16 +410,5 @@
   .page-shell + * {
     margin-top: 46px !important;
     padding-top: 58px !important;
-  }
-
-  .footer-shell {
-    min-height: 420px !important;
-  }
-
-  .footer-bottom::before {
-    width: min(76vw, 360px);
-    min-width: 220px;
-    height: 112px;
-    background-size: 152px 152px, 100% 100%;
   }
 }
