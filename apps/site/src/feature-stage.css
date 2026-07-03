@@ -1,4 +1,68 @@
-/* Later import: overrides footer.css for the simulated demo, feature scroll, and footer hover fill. */
+/* Later import: overrides footer.css for typography, the simulated demo, feature scroll, and footer hover fill. */
+
+:root {
+  --font-primary: "Orbitron", ui-sans-serif, system-ui, sans-serif;
+  --font-secondary: "Space Mono", ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-secondary);
+}
+
+body,
+button,
+input,
+textarea,
+select {
+  font-family: var(--font-secondary);
+}
+
+h1,
+h2,
+h3,
+.brand,
+.nav-links,
+.button,
+.tab,
+.os-label,
+.copy-button,
+.section-kicker,
+.feature-number,
+.feature-tag,
+.footer-word,
+.footer-word::before,
+footer::before,
+.footer-bottom {
+  font-family: var(--font-primary);
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.035em;
+}
+
+.section-kicker,
+.feature-tag,
+.feature-number,
+.nav-links,
+.button,
+.tab,
+.os-label,
+.copy-button,
+.footer-bottom {
+  letter-spacing: 0.035em;
+}
+
+code,
+.prompt,
+.demo-terminal-body,
+.feature-terminal-body {
+  font-family: var(--font-secondary);
+}
+
+footer::before,
+.footer-word span,
+.footer-word::before {
+  letter-spacing: -0.045em !important;
+}
 
 .demo-section {
   padding: 4px 0 74px;
@@ -65,7 +129,6 @@
   position: relative;
   min-height: 270px;
   padding: clamp(18px, 4vw, 34px);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: clamp(0.82rem, 1.5vw, 1rem);
 }
 
@@ -84,7 +147,7 @@
 .demo-prompt {
   flex: 0 0 48px;
   color: #d7a64b;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .demo-type {
@@ -153,16 +216,17 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  max-width: 620px;
+  max-width: 650px;
   padding: 0;
 }
 
 .features-copy h2 {
-  max-width: 460px;
+  max-width: 520px;
+  line-height: 1.04;
 }
 
 .features-copy p:last-child {
-  max-width: 460px;
+  max-width: 520px;
   margin: 16px 0 0;
 }
 
@@ -201,7 +265,7 @@
 }
 
 .feature-stage::after {
-  opacity: 0.26;
+  opacity: 0.22;
   background: linear-gradient(115deg, transparent 18%, rgba(255, 255, 255, 0.34) 42%, transparent 66%);
   transform: translateX(calc(-70% + (var(--feature-progress) * 140%)));
   mix-blend-mode: screen;
@@ -226,7 +290,6 @@
   display: grid;
   gap: 10px;
   padding: clamp(12px, 3.2vw, 18px);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: clamp(0.74rem, 2.8vw, 0.92rem);
 }
 
@@ -276,7 +339,7 @@
   display: inline-block;
   width: 24px;
   color: #d7a64b;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .feature-terminal-step.is-active p {
@@ -337,6 +400,7 @@
   width: 36px;
   height: 36px;
   margin: 0;
+  font-weight: 800;
 }
 
 .feature-tag {
@@ -348,18 +412,20 @@
   border-radius: 999px;
   color: var(--muted);
   background: rgba(255, 250, 242, 0.62);
-  font-size: 0.76rem;
-  font-weight: 850;
+  font-size: 0.68rem;
+  font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
 
 .feature-step-card h3 {
   margin: 0 0 8px;
+  font-size: clamp(1rem, 1.6vw, 1.2rem);
 }
 
 .feature-step-card p {
   margin: 0;
+  font-size: clamp(0.86rem, 1.2vw, 0.96rem);
 }
 
 .feature-card:hover,
@@ -412,7 +478,6 @@
   font-size: clamp(4.8rem, 17vw, 12rem);
   font-weight: 950;
   line-height: 0.76;
-  letter-spacing: -0.11em;
   background:
     repeating-linear-gradient(90deg,
       #ff595e 0 10px,
@@ -459,7 +524,7 @@
 
 @media (min-width: 760px) {
   .features-pin {
-    grid-template-columns: minmax(210px, 0.32fr) minmax(0, 0.68fr);
+    grid-template-columns: minmax(210px, 0.34fr) minmax(0, 0.66fr);
     gap: clamp(24px, 4.2vw, 44px);
   }
 
@@ -471,39 +536,50 @@
   }
 
   .feature-terminal-body {
-    font-size: clamp(0.8rem, 1.35vw, 0.96rem);
+    font-size: clamp(0.78rem, 1.25vw, 0.94rem);
   }
 }
 
-@media (min-width: 1080px) and (min-height: 720px) {
+@media (min-width: 1080px) and (min-height: 620px) {
   .features-cinema {
-    min-height: 325vh;
+    min-height: 292vh;
     padding: 0 0 48px;
   }
 
   .features-pin {
     position: sticky;
-    top: clamp(68px, 9vh, 96px);
-    min-height: calc(100vh - 112px);
-    grid-template-columns: minmax(240px, 0.32fr) minmax(0, 0.68fr);
+    top: clamp(54px, 7vh, 78px);
+    min-height: calc(100vh - 88px);
+    grid-template-columns: minmax(260px, 0.33fr) minmax(0, 0.67fr);
     align-items: center;
-    padding: 18px 0 34px;
+    gap: clamp(28px, 4vw, 52px);
+    padding: 12px 0 28px;
   }
 
   .features-copy {
     position: relative;
     top: auto;
-    min-height: 440px;
+    min-height: 0;
+  }
+
+  .features-copy h2 {
+    max-width: 430px;
+    font-size: clamp(2.2rem, 4.4vw, 4.2rem);
+  }
+
+  .features-copy p:last-child {
+    max-width: 440px;
+    font-size: clamp(0.9rem, 1vw, 1rem);
   }
 
   .feature-stage {
-    height: min(650px, calc(100vh - 138px));
-    min-height: 540px;
-    grid-template-columns: minmax(305px, 1.05fr) minmax(260px, 0.82fr);
+    height: min(520px, calc(100vh - 118px));
+    min-height: 420px;
+    grid-template-columns: minmax(0, 1.08fr) minmax(245px, 0.72fr);
     gap: 16px;
-    padding: 16px;
+    padding: 16px 16px 44px;
     box-shadow: 0 24px 74px rgba(72, 55, 34, 0.15);
-    transform: scale(calc(0.982 + (var(--feature-progress) * 0.018)));
+    transform: scale(calc(0.988 + (var(--feature-progress) * 0.012)));
     transform-origin: center center;
   }
 
@@ -513,14 +589,12 @@
   }
 
   .feature-stage::after {
-    opacity: 0.38;
+    opacity: 0.3;
   }
 
   .feature-terminal {
     min-height: 100%;
-    transform:
-      translateX(calc(var(--feature-progress) * -10px))
-      scale(calc(1.015 - (var(--feature-progress) * 0.015)));
+    transform: translateX(calc(var(--feature-progress) * -6px));
     transition: box-shadow 0.18s ease;
   }
 
@@ -529,7 +603,7 @@
     flex: 1;
     min-height: 0;
     padding: clamp(20px, 4vw, 38px);
-    font-size: clamp(0.84rem, 1.45vw, 1rem);
+    font-size: clamp(0.78rem, 1vw, 0.94rem);
   }
 
   .feature-terminal-step {
@@ -541,13 +615,13 @@
     border-radius: 0;
     background: transparent;
     opacity: 0;
-    transform: translateY(42px) scale(0.96);
-    filter: blur(12px);
+    transform: translateY(34px) scale(0.97);
+    filter: blur(10px);
     transition: opacity 0.32s ease, transform 0.42s cubic-bezier(0.2, 0.85, 0.2, 1), filter 0.32s ease;
   }
 
   .feature-terminal-step.is-before {
-    transform: translateY(-44px) scale(0.965);
+    transform: translateY(-36px) scale(0.97);
   }
 
   .feature-terminal-step.is-active {
@@ -558,51 +632,78 @@
 
   .feature-terminal-step p {
     display: block;
-    margin: 0 0 18px;
+    margin: 0 0 16px;
+    line-height: 1.45;
+  }
+
+  .feature-terminal-step span {
+    width: 24px;
   }
 
   .feature-deck {
-    grid-template-columns: 1fr;
-    align-content: center;
-    perspective: 1200px;
+    position: relative;
+    display: block;
+    min-height: 100%;
   }
 
   .feature-step-card {
-    min-height: 132px;
-    opacity: 0.46;
-    transform:
-      translateX(calc((var(--step) - 1) * 18px))
-      translateY(calc((1 - var(--step-progress, 0)) * 18px))
-      rotateX(calc((1 - var(--step-progress, 0)) * 7deg))
-      scale(0.972);
-    filter: saturate(0.86);
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    min-height: auto;
+    max-height: calc(100% - 18px);
+    overflow: hidden;
+    padding: clamp(18px, 2.2vw, 24px);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(calc(-50% + 34px)) scale(0.96);
+    filter: saturate(0.86) blur(6px);
   }
 
   .feature-step-card.is-before {
-    opacity: 0.34;
-    transform: translateX(-16px) translateY(-8px) scale(0.95);
+    opacity: 0;
+    transform: translateY(calc(-50% - 26px)) scale(0.96);
   }
 
   .feature-step-card.is-active {
     opacity: 1;
-    filter: saturate(1);
+    pointer-events: auto;
+    filter: saturate(1) blur(0);
     box-shadow: 0 20px 48px rgba(72, 55, 34, 0.14);
-    transform: translateX(0) translateY(0) rotateX(0) scale(1.025);
+    transform: translateY(-50%) scale(1);
+  }
+
+  .feature-step-card h3 {
+    font-size: clamp(1.05rem, 1.4vw, 1.28rem);
+  }
+
+  .feature-step-card p {
+    font-size: clamp(0.84rem, 1vw, 0.96rem);
+    line-height: 1.55;
   }
 
   .feature-progress-track {
     position: absolute;
-    left: calc(16px + ((100% - 32px) * 0.56));
-    top: 24px;
-    bottom: 24px;
-    width: 2px;
-    height: auto;
+    left: 22px;
+    right: 22px;
+    bottom: 20px;
+    width: auto;
+    height: 3px;
+  }
+}
+
+@media (max-width: 920px) {
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.025em;
   }
 
-  .feature-progress-track span {
-    transform-origin: top;
-    transform: scaleY(var(--feature-progress));
-    background: linear-gradient(180deg, #111111, #d7a64b, #4094b7);
+  .features-copy {
+    position: relative;
+    top: auto;
+    min-height: auto;
   }
 }
 
@@ -628,6 +729,10 @@
 
   .feature-card-top {
     margin-bottom: 12px;
+  }
+
+  .feature-terminal-step {
+    min-height: auto;
   }
 }
 
