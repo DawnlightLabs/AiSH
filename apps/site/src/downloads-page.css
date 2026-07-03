@@ -309,6 +309,17 @@
   color: var(--muted);
 }
 
+.page-shell + * {
+  margin-top: 72px !important;
+  padding-top: clamp(48px, 6vw, 82px) !important;
+  background: transparent !important;
+}
+
+.page-shell + *::before,
+.page-shell + *::after {
+  opacity: 0 !important;
+}
+
 @media (max-width: 900px) {
   .downloads-container {
     width: min(calc(100% - 36px), 1180px);
@@ -394,5 +405,10 @@
 
   .release-open {
     width: fit-content;
+  }
+
+  .page-shell + * {
+    margin-top: 46px !important;
+    padding-top: 58px !important;
   }
 }
