@@ -14,21 +14,27 @@ on:
       make_latest:
         description: "Mark this release as latest"
         required: true
-        default: true
-        type: boolean
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
       prerelease:
         description: "Publish as prerelease"
         required: true
-        default: false
-        type: boolean
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: write
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
-  MAKE_LATEST: ${{ github.event_name == 'workflow_dispatch' && inputs.make_latest || true }}
-  PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+  MAKE_LATEST: ${{ inputs.make_latest || 'true' }}
+  PRERELEASE: ${{ inputs.prerelease || 'false' }}
 
 jobs:
   build:
