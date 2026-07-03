@@ -1,6 +1,6 @@
-/* Final landing-page override.
-   Keeps the uncodexified flatter layout and smaller radii, restores the warm
-   paper background, keeps scroll reveal motion, and uses a simple footer. */
+/* Landing-page final overrides.
+   Uncodexified structure: flatter surfaces, smaller radii, warm paper color,
+   Lenis/reveal motion, simple footer, and a horizontal force-scroll feature rail. */
 
 :root {
   color-scheme: light;
@@ -24,9 +24,7 @@
   font-family: "Saira", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 html {
   scroll-behavior: smooth;
@@ -204,31 +202,11 @@ select {
   pointer-events: none;
 }
 
-.logo-panel::after {
-  content: "";
-  position: absolute;
-  right: 22px;
-  top: 24px;
-  width: 6px;
-  height: 6px;
-  opacity: 0;
-  pointer-events: none;
-  background: #1f1914;
-  box-shadow:
-    6px 0 0 #1f1914,
-    12px 0 0 #1f1914,
-    0 6px 0 #1f1914,
-    12px 6px 0 #1f1914,
-    0 12px 0 #1f1914,
-    6px 12px 0 rgba(230, 184, 93, 0.98),
-    12px 12px 0 #1f1914,
-    6px 18px 0 #1f1914;
-  transition: opacity 0.18s ease;
-}
-
+.logo-panel::after,
 .logo-panel:hover::after {
-  opacity: 1;
-  animation: pixel-hop 2.2s steps(8) infinite;
+  content: none;
+  display: none;
+  animation: none;
 }
 
 .logo-orbit {
@@ -281,6 +259,7 @@ h3 {
 
 .hero-copy,
 .section-heading p,
+.features-copy p,
 .feature-card p,
 .cta-card p,
 .install-note {
@@ -343,20 +322,6 @@ h3 {
 
 .install {
   padding: 34px 0 82px;
-}
-
-.features {
-  padding: 10px 0 82px;
-}
-
-.feature-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.cta {
-  padding: 0 0 86px;
 }
 
 .page-hero {
@@ -496,20 +461,114 @@ code {
   font-size: 0.94rem;
 }
 
-.feature-card {
-  min-height: 190px;
+.features,
+.feature-grid {
+  display: none;
+}
+
+.features-cinema {
+  position: relative;
+  min-height: 142vh;
+  padding: 12px 0 48px;
+  --feature-progress: 0;
+  --feature-shift: 0px;
+}
+
+.features-pin {
+  position: sticky;
+  top: 78px;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.42fr) minmax(0, 0.58fr);
+  gap: 26px;
+  align-items: stretch;
+  padding: 24px 0;
+}
+
+.features-copy {
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 26px 0;
+}
+
+.section-kicker {
+  margin: 0 0 10px;
+  color: #8a7a63;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.features-copy h2 {
+  max-width: 470px;
+}
+
+.features-copy p:last-child {
+  max-width: 430px;
+  margin: 16px 0 0;
+}
+
+.feature-rail-window {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 88% 18%, rgba(224, 183, 95, 0.13), transparent 18rem),
+    rgba(255, 250, 242, 0.48);
+  box-shadow: var(--shadow);
+}
+
+.feature-rail-inner {
+  display: flex;
+  width: max-content;
+  gap: 14px;
+  padding: 16px;
+  will-change: transform;
+  transform: translate3d(var(--feature-shift), 0, 0);
+}
+
+.feature-slide {
+  flex: 0 0 clamp(320px, 42vw, 500px);
+  min-height: 260px;
   padding: 24px;
-  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  transform:
+    translateY(calc((var(--card-index) * 8px) - (var(--feature-progress) * 14px)))
+    rotate(calc((var(--card-index) - 1) * 0.55deg));
+  transition: transform 0.18s linear, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.feature-number {
+  display: inline-grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  margin-bottom: 42px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--paper);
+  background: var(--ink);
+  font-weight: 850;
+}
+
+.feature-card h3 {
+  margin: 0 0 10px;
+}
+
+.feature-card p {
+  margin: 0;
 }
 
 .feature-card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-3px) rotate(0deg);
   border-color: var(--line-strong);
   box-shadow: 0 10px 26px rgba(72, 55, 34, 0.1);
 }
 
-.feature-card p {
-  margin: 12px 0 0;
+.cta {
+  padding: 0 0 34px;
 }
 
 .cta-card {
@@ -539,13 +598,13 @@ code {
 
 footer.site-footer {
   position: relative;
-  margin-top: 18px;
-  padding: 54px 0 34px;
+  margin-top: 0;
+  padding: 28px 0 30px;
   border-top: 1px solid var(--line);
   background:
-    radial-gradient(circle at 8% 84%, rgba(76, 158, 196, 0.11), transparent 24rem),
-    radial-gradient(circle at 82% 14%, rgba(224, 183, 95, 0.12), transparent 20rem),
-    rgba(239, 229, 214, 0.56);
+    radial-gradient(circle at 8% 84%, rgba(76, 158, 196, 0.1), transparent 24rem),
+    radial-gradient(circle at 82% 14%, rgba(224, 183, 95, 0.11), transparent 20rem),
+    rgba(239, 229, 214, 0.48);
   color: var(--text);
   overflow: visible;
 }
@@ -558,10 +617,13 @@ footer.site-footer::after {
 
 .footer-shell {
   position: relative;
-  min-height: 230px;
   width: min(calc(100% - 36px), var(--max-width));
+  min-height: 205px;
   margin-inline: auto;
-  padding: 34px 36px 30px;
+  padding: 28px 36px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: rgba(255, 250, 242, 0.64);
@@ -570,7 +632,7 @@ footer.site-footer::after {
 }
 
 .footer-word {
-  line-height: 0.82;
+  line-height: 0.76;
   user-select: none;
 }
 
@@ -578,11 +640,11 @@ footer.site-footer::after {
   display: block;
   width: fit-content;
   color: transparent;
-  font-size: clamp(5.5rem, 20vw, 15rem);
+  font-size: clamp(4.8rem, 17vw, 12rem);
   font-weight: 950;
   letter-spacing: -0.11em;
   background:
-    radial-gradient(circle, rgba(41, 37, 36, 0.32) 1.15px, transparent 1.35px),
+    radial-gradient(circle, rgba(41, 37, 36, 0.34) 1.1px, transparent 1.35px),
     linear-gradient(rgba(41, 37, 36, 0.12), rgba(41, 37, 36, 0.12));
   background-size: 10px 10px, 100% 100%;
   -webkit-background-clip: text;
@@ -593,19 +655,18 @@ footer.site-footer::after {
 }
 
 .footer-shell:hover .footer-word span {
-  background-position: 4px 3px, 0 0;
+  background-position: 7px 4px, 0 0;
   transform: translateY(-2px);
 }
 
 .footer-bottom {
-  position: absolute;
-  left: 36px;
-  right: 36px;
-  bottom: 28px;
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 16px;
   align-items: center;
+  margin-top: 18px;
   color: var(--muted);
   font-size: 0.94rem;
   font-weight: 750;
@@ -618,6 +679,17 @@ footer.site-footer::after {
   border-radius: 999px;
   background: rgba(255, 250, 242, 0.62);
   box-shadow: none;
+  white-space: nowrap;
+}
+
+.footer-dawnlight {
+  display: inline-block;
+  color: transparent;
+  background: linear-gradient(90deg, #a06f29, #3e95b7, #d7a64b, #a06f29);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: dawnlight-flow 4.8s linear infinite;
 }
 
 .footer-bottom > span:last-child {
@@ -627,9 +699,13 @@ footer.site-footer::after {
   text-align: right;
 }
 
+@keyframes dawnlight-flow {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 220% 50%; }
+}
+
 @media (max-width: 900px) {
-  .hero-grid,
-  .feature-grid {
+  .hero-grid {
     grid-template-columns: 1fr;
   }
 
@@ -639,6 +715,38 @@ footer.site-footer::after {
 
   .logo-panel {
     min-height: 260px;
+  }
+
+  .features-cinema {
+    min-height: auto;
+    padding: 8px 0 62px;
+  }
+
+  .features-pin {
+    position: relative;
+    top: auto;
+    grid-template-columns: 1fr;
+    padding: 0;
+  }
+
+  .features-copy {
+    min-height: 0;
+    padding: 0;
+  }
+
+  .feature-rail-window {
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+  }
+
+  .feature-rail-inner {
+    transform: none;
+  }
+
+  .feature-slide {
+    flex-basis: min(82vw, 430px);
+    scroll-snap-align: start;
+    transform: none;
   }
 }
 
@@ -688,17 +796,15 @@ footer.site-footer::after {
 
 @media (max-width: 760px) {
   .footer-shell {
-    min-height: 210px;
-    padding: 28px;
+    min-height: 190px;
+    padding: 26px 28px 22px;
   }
 
   .footer-word span {
-    font-size: clamp(4.8rem, 31vw, 9rem);
+    font-size: clamp(4.6rem, 29vw, 8.6rem);
   }
 
   .footer-bottom {
-    left: 28px;
-    right: 28px;
     grid-template-columns: 1fr;
     gap: 10px;
   }
@@ -722,5 +828,10 @@ footer.site-footer::after {
     opacity: 1;
     transform: none;
     filter: none;
+  }
+
+  .feature-rail-inner,
+  .feature-slide {
+    transform: none;
   }
 }
