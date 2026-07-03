@@ -28,9 +28,9 @@ const OS_COMMANDS = {
 };
 
 const FEATURES = [
-  ['01', 'Plain shell workflow', 'Type normally, ask when needed, and keep the terminal as the main interface.'],
-  ['02', 'Provider shell builds', 'Install the native provider shell directly from GitHub release assets.'],
-  ['03', 'Approval before change', 'Read-only commands can move quickly. Mutating commands require explicit approval.'],
+  ['01', 'Plain shell workflow', 'Type normally, ask when needed, and keep the terminal as the main interface.', 'normal input'],
+  ['02', 'Provider shell builds', 'Install the native provider shell directly from GitHub release assets.', 'native install'],
+  ['03', 'Approval before change', 'Read-only commands can move quickly. Mutating commands require explicit approval.', 'explicit approval'],
 ];
 
 function prefersReducedMotion() {
@@ -158,17 +158,19 @@ function useFeatureRail(page) {
 
     function update() {
       sections.forEach((section) => {
-        const track = section.querySelector('.feature-rail-inner');
-        const windowEl = section.querySelector('.feature-rail-window');
-        if (!track || !windowEl) return;
-
         const rect = section.getBoundingClientRect();
         const travel = Math.max(1, rect.height - window.innerHeight);
         const progress = Math.min(1, Math.max(0, -rect.top / travel));
-        const maxShift = Math.max(0, track.scrollWidth - windowEl.clientWidth);
+        const cards = Array.from(section.querySelectorAll('.feature-step-card'));
+        const active = Math.min(cards.length - 1, Math.round(progress * Math.max(cards.length - 1, 1)));
 
         section.style.setProperty('--feature-progress', progress.toFixed(4));
-        section.style.setProperty('--feature-shift', `${Math.round(-maxShift * progress)}px`);
+        section.style.setProperty('--feature-tilt', `${((progress - 0.5) * 3).toFixed(2)}deg`);
+        section.setAttribute('data-active', `${active}`);
+
+        cards.forEach((card, index) => {
+          card.classList.toggle('is-active', index === active);
+        });
       });
 
       frameId = requestAnimationFrame(update);
@@ -297,14 +299,26 @@ function FeatureCarousel() {
       <div className="container features-pin reveal">
         <div className="features-copy">
           <p className="section-kicker">Workflow</p>
-          <h2>Built like a shell, not a dashboard.</h2>
-          <p>Scroll through the operating model: stay native, install the provider, approve anything that changes state.</p>
+          <h2>Three steps. One native command line.</h2>
+          <p>AiSH stays out of the way until the shell needs intent, context, or permission.</p>
         </div>
-        <div className="feature-rail-window">
-          <div className="feature-rail-inner">
-            {FEATURES.map(([number, title, text], index) => (
-              <article className="feature-card feature-slide" style={{ '--card-index': index }} key={title}>
-                <span className="feature-number">{number}</span>
+        <div className="feature-stage" aria-label="AiSH workflow animation">
+          <div className="feature-terminal" aria-hidden="true">
+            <div className="terminal-window-bar"><span /><span /><span /></div>
+            <div className="terminal-lines">
+              <p><span>$</span> aish plan "clean the repo"</p>
+              <p><span>→</span> inspect only</p>
+              <p><span>✓</span> ask before changing files</p>
+            </div>
+          </div>
+          <div className="feature-progress-track" aria-hidden="true"><span /></div>
+          <div className="feature-deck">
+            {FEATURES.map(([number, title, text, tag], index) => (
+              <article className="feature-card feature-step-card" style={{ '--step': index }} key={title}>
+                <div className="feature-card-top">
+                  <span className="feature-number">{number}</span>
+                  <span className="feature-tag">{tag}</span>
+                </div>
                 <h3>{title}</h3>
                 <p>{text}</p>
               </article>
