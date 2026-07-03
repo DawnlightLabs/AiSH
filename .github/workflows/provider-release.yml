@@ -21,6 +21,10 @@ jobs:
             os: windows-latest
             artifact: aish-windows-x64.zip
             bin: target/release/aish.exe
+          - name: windows-arm64
+            os: windows-11-arm
+            artifact: aish-windows-arm64.zip
+            bin: target/release/aish.exe
           - name: macos-x64
             os: macos-13
             artifact: aish-macos-x64.tar.gz
@@ -32,6 +36,10 @@ jobs:
           - name: linux-x64
             os: ubuntu-latest
             artifact: aish-linux-x64.tar.gz
+            bin: target/release/aish
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            artifact: aish-linux-arm64.tar.gz
             bin: target/release/aish
 
     steps:
