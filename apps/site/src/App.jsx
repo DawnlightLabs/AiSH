@@ -31,33 +31,36 @@ const OS_COMMANDS = {
 const FEATURES = [
   {
     number: '01',
-    title: 'Plain shell workflow',
-    text: 'Type normally, ask when needed, and keep the terminal as the main interface.',
-    tag: 'normal input',
-    lines: ['$ aish "summarize this repo"', 'reading project files', 'returns a terminal-first plan'],
+    title: 'Ask in plain language',
+    text: 'Describe the intent. AiSH keeps you inside the shell and turns the request into a command plan.',
+    tag: 'intent',
+    prompt: 'find the largest log files',
+    lines: ['intent received', 'reading current directory context', 'building a safe command plan'],
   },
   {
     number: '02',
-    title: 'Provider shell builds',
-    text: 'Install the native provider shell directly from GitHub release assets.',
-    tag: 'native install',
-    lines: ['$ aish update provider', 'release asset detected', 'provider shell is ready'],
+    title: 'Review the exact command',
+    text: 'The generated command is shown before it runs, so the workflow stays inspectable and native.',
+    tag: 'plan',
+    prompt: 'show the command first',
+    lines: ['Get-ChildItem -Recurse *.log', 'Sort-Object Length -Descending', 'Select-Object -First 10'],
   },
   {
     number: '03',
-    title: 'Approval before change',
-    text: 'Read-only commands can move quickly. Mutating commands require explicit approval.',
-    tag: 'explicit approval',
-    lines: ['$ aish "prepare a release note"', 'draft command preview', 'waiting for explicit approval'],
+    title: 'Approve system changes',
+    text: 'Read-only actions can move fast. Anything that changes files or state waits for explicit approval.',
+    tag: 'approve',
+    prompt: 'clean temp files after review',
+    lines: ['12 files matched', 'mutation detected', 'approval required before execution'],
   },
 ];
 
 const DEMO_LINES = [
-  ['PS>', 'aish "show package scripts"', 28],
-  ['AiSH', 'Planning read-only command…', 30],
-  ['AiSH', 'Get-Content package.json | Select-String scripts', 50],
-  ['OK', 'read-only: running now', 24],
-  ['AiSH', 'Next step: ask before any system change.', 44],
+  ['PS>', 'aish "find large files in this repo"', 38],
+  ['AiSH', 'Intent understood. Planning a read-only command.', 48],
+  ['AiSH', 'Get-ChildItem -Recurse | Sort-Object Length -Descending | Select-Object -First 10', 86],
+  ['OK', 'No approval needed for read-only inspection.', 44],
+  ['AiSH', 'For cleanup or file changes, AiSH will ask first.', 51],
 ];
 
 function prefersReducedMotion() {
@@ -191,7 +194,6 @@ function useFeatureRail(page) {
         const active = Math.min(FEATURES.length - 1, Math.floor(progress * FEATURES.length));
 
         section.style.setProperty('--feature-progress', progress.toFixed(4));
-        section.style.setProperty('--feature-tilt', `${((progress - 0.5) * 2.4).toFixed(2)}deg`);
         section.setAttribute('data-active', `${active}`);
 
         section.querySelectorAll('.feature-step-card').forEach((card, index) => {
@@ -243,8 +245,8 @@ function Hero() {
     <section className="hero" id="top">
       <div className="container hero-grid">
         <div className="hero-text reveal">
-          <h1>AiSH for the terminal.</h1>
-          <p className="hero-copy">A native provider shell that turns plain-language intent into command-line actions, with approval before anything changes your system.</p>
+          <h1>Think it.<br />Run it.</h1>
+          <p className="hero-copy">AiSH turns natural-language intent into precise shell workflows. Built for developers, operators, and security professionals who want a faster, more intelligent command line.</p>
           <div className="hero-actions">
             <a className="button button-primary" href="/#install">Install AiSH</a>
             <a className="button button-secondary" href={GITHUB_URL}>View source</a>
@@ -263,11 +265,6 @@ function DemoSection() {
   return (
     <section className="demo-section" aria-label="AiSH simulated terminal demo">
       <div className="container demo-panel reveal">
-        <div className="demo-copy">
-          <p className="section-kicker">Live feel</p>
-          <h2>A terminal demo without a video file.</h2>
-          <p>Commands type in, AiSH plans the shell action, then waits before anything changes your system.</p>
-        </div>
         <div className="demo-terminal" aria-label="Simulated AiSH terminal session">
           <div className="terminal-window-bar"><span /><span /><span /></div>
           <div className="demo-terminal-body">
@@ -355,8 +352,8 @@ function FeatureCarousel() {
       <div className="container features-pin reveal">
         <div className="features-copy">
           <p className="section-kicker">Workflow</p>
-          <h2>Force-scroll through the shell loop.</h2>
-          <p>The terminal view changes as you scroll: intent, command planning, and approval stay in one native flow.</p>
+          <h2>How AiSH works.</h2>
+          <p>Scroll through a simulated shell session. The active step changes with the page, without screenshots or fake panels.</p>
         </div>
         <div className="feature-stage" aria-label="AiSH workflow animation">
           <div className="feature-terminal" aria-hidden="true">
@@ -364,11 +361,9 @@ function FeatureCarousel() {
             <div className="feature-terminal-body">
               {FEATURES.map((feature) => (
                 <div className="feature-terminal-step" key={feature.title}>
+                  <p><span>$</span>aish "{feature.prompt}"</p>
                   {feature.lines.map((line, index) => (
-                    <p key={line}>
-                      <span>{index === 0 ? '$' : index === 1 ? '→' : '✓'}</span>
-                      {line.replace(/^\$\s?/, '')}
-                    </p>
+                    <p key={line}><span>{index === feature.lines.length - 1 ? '✓' : '→'}</span>{line}</p>
                   ))}
                 </div>
               ))}
