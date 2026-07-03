@@ -45,15 +45,16 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists."
             exit 0
           fi
 
-          release_flags=(--title "AiSH $RELEASE_TAG" --generate-notes)
+          release_flags=(--title "AiSH $RELEASE_TAG" --generate-notes --repo "$GH_REPO")
 
           if [[ "$PRERELEASE" == "true" ]]; then
             release_flags+=(--prerelease)
@@ -141,10 +142,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release upload "$RELEASE_TAG" \
             "${{ matrix.artifact }}" \
             "${{ matrix.artifact }}.sha256" \
+            --repo "$GH_REPO" \
             --clobber
 
   scripts:
@@ -158,9 +161,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release upload "$RELEASE_TAG" \
             apps/site/public/install \
             apps/site/public/install.sh \
             apps/site/public/install.ps1 \
+            --repo "$GH_REPO" \
             --clobber
