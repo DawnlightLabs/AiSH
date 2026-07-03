@@ -1,0 +1,62 @@
+/* Hero headline letter-fill glitch. No overlay layers: the effect is clipped into the real h1 glyphs. */
+
+.hero-text h1 {
+  --hero-dot-size: clamp(8px, 0.72vw, 12px);
+  display: inline-block;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: none;
+  background:
+    radial-gradient(circle at 1.2px 1.2px, rgba(64, 148, 183, 0.72) 0.9px, transparent 1.35px),
+    radial-gradient(circle at 4px 2px, rgba(255, 202, 58, 0.64) 0.9px, transparent 1.3px),
+    radial-gradient(circle at 2px 5px, rgba(255, 89, 94, 0.54) 0.82px, transparent 1.22px),
+    linear-gradient(180deg, #130f0c 0%, #090706 100%);
+  background-size:
+    var(--hero-dot-size) var(--hero-dot-size),
+    calc(var(--hero-dot-size) * 1.55) calc(var(--hero-dot-size) * 1.55),
+    calc(var(--hero-dot-size) * 2.2) calc(var(--hero-dot-size) * 2.2),
+    100% 100%;
+  background-position: 0 0, 5px 3px, 9px 1px, 0 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation:
+    hero-letter-pixel-crawl 2.4s steps(7, end) infinite,
+    hero-letter-color-cycle 1.8s steps(6, end) infinite;
+}
+
+.hero-text h1:hover {
+  animation:
+    hero-letter-pixel-crawl 1.1s steps(7, end) infinite,
+    hero-letter-color-cycle 0.85s steps(6, end) infinite,
+    hero-letter-glitch-nudge 0.72s steps(2, end) infinite;
+}
+
+@keyframes hero-letter-pixel-crawl {
+  0% { background-position: 0 0, 5px 3px, 9px 1px, 0 0; }
+  20% { background-position: 3px -2px, 9px 5px, 4px 8px, 0 0; }
+  40% { background-position: -2px 4px, 2px 8px, 12px 3px, 0 0; }
+  60% { background-position: 5px 2px, 10px 0, 1px 7px, 0 0; }
+  80% { background-position: 1px 5px, 4px -1px, 7px 11px, 0 0; }
+  100% { background-position: 0 0, 5px 3px, 9px 1px, 0 0; }
+}
+
+@keyframes hero-letter-color-cycle {
+  0%, 100% { filter: hue-rotate(0deg) saturate(1.08) contrast(1.02); }
+  25% { filter: hue-rotate(88deg) saturate(1.18) contrast(1.06); }
+  50% { filter: hue-rotate(188deg) saturate(1.12) contrast(1.03); }
+  75% { filter: hue-rotate(292deg) saturate(1.2) contrast(1.06); }
+}
+
+@keyframes hero-letter-glitch-nudge {
+  0%, 100% { transform: translate(0, 0); }
+  25% { transform: translate(1px, 0); }
+  50% { transform: translate(-1px, 1px); }
+  75% { transform: translate(1px, -1px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-text h1,
+  .hero-text h1:hover {
+    animation: none;
+  }
+}
