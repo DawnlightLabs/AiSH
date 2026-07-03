@@ -3,6 +3,7 @@ import Lenis from 'lenis';
 
 const GITHUB_URL = 'https://github.com/DawnlightLabs/AiSH';
 const RELEASE_URL = `${GITHUB_URL}/releases/latest`;
+const RELEASES_API_URL = 'https://api.github.com/repos/DawnlightLabs/AiSH/releases?per_page=8';
 const WIN_INSTALL_COMMAND = ['irm', 'https://aish.dawnlightlabs.com/install.ps1', '|', ['i', 'e', 'x'].join('')].join(' ');
 const UNIX_INSTALL_COMMAND = ['curl', '-fsSL', 'https://aish.dawnlightlabs.com/install', '|', 'bash'].join(' ');
 
@@ -60,6 +61,22 @@ const DEMO_LINES = [
   ['AiSH', 'Get-ChildItem -Recurse | Sort-Object Length -Descending | Select-Object -First 10', 86],
   ['OK', 'No approval needed for read-only inspection.', 44],
   ['AiSH', 'For cleanup or file changes, AiSH will ask first.', 51],
+];
+
+const FALLBACK_RELEASE = {
+  id: 'latest',
+  tag_name: 'latest',
+  name: 'Latest release',
+  html_url: RELEASE_URL,
+  published_at: '',
+  body: 'Release metadata is loaded directly from the public GitHub Releases API. If the API is rate-limited, use the GitHub release page.',
+  assets: [],
+};
+
+const DOWNLOAD_GROUPS = [
+  { key: 'macos', label: 'macOS', icon: 'apple' },
+  { key: 'windows', label: 'Windows', icon: 'windows' },
+  { key: 'linux', label: 'Linux', icon: 'linux' },
 ];
 
 function prefersReducedMotion() {
@@ -178,6 +195,38 @@ function useRevealOnScroll(page) {
   }, [page]);
 }
 
+function useGitHubReleases() {
+  const [state, setState] = useState({ loading: true, error: '', releases: [] });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadReleases() {
+      try {
+        const response = await fetch(RELEASES_API_URL, {
+          headers: { Accept: 'application/vnd.github+json' },
+        });
+        if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
+        const releases = await response.json();
+        if (!cancelled) {
+          setState({ loading: false, error: '', releases: Array.isArray(releases) ? releases : [] });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setState({ loading: false, error: error.message || 'Unable to load releases.', releases: [] });
+        }
+      }
+    }
+
+    loadReleases();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return state;
+}
+
 function clamp(value, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
 }
@@ -270,6 +319,53 @@ function useDemoScroll(page) {
   }, [page]);
 }
 
+function formatDate(value) {
+  if (!value) return 'Release channel';
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(value));
+}
+
+function formatSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(size >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function releaseName(release) {
+  return release?.name || release?.tag_name || 'Release';
+}
+
+function classifyAsset(asset) {
+  const name = asset.name.toLowerCase();
+  if (/(win|windows|\.exe|\.msi|\.ps1)/.test(name)) return 'windows';
+  if (/(mac|macos|darwin|osx|\.dmg|\.pkg)/.test(name)) return 'macos';
+  if (/(linux|\.deb|\.rpm|appimage|\.tar\.gz|\.tgz)/.test(name)) return 'linux';
+  return 'other';
+}
+
+function groupAssets(assets = []) {
+  const groups = { macos: [], windows: [], linux: [], other: [] };
+  assets.forEach((asset) => {
+    groups[classifyAsset(asset)].push(asset);
+  });
+  return groups;
+}
+
+function releaseNotes(release) {
+  const body = (release?.body || '').trim();
+  if (!body) return ['No changelog text was published for this release yet.'];
+  return body
+    .split('\n')
+    .map((line) => line.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').trim())
+    .filter(Boolean)
+    .slice(0, 7);
+}
+
 function LogoMark({ className = 'brand-mark', variant = 'icon' }) {
   const src = variant === 'full'
     ? '/brand/aish-full-horizontal-graphite.svg'
@@ -290,7 +386,7 @@ function Nav() {
           <a href="/#install">Install</a>
           <a href="/#features">Features</a>
           <a href="/downloads/">Downloads</a>
-          <a href={GITHUB_URL}>GitHub</a>
+          <a className="github-link" href={GITHUB_URL}>GitHub</a>
         </nav>
       </div>
     </header>
@@ -462,18 +558,112 @@ function Cta() {
   );
 }
 
-function Downloads() {
+function DownloadAssetLink({ asset }) {
   return (
-    <main id="top">
-      <section className="page-hero">
-        <div className="container reveal">
-          <h1>Downloads</h1>
-          <p className="hero-copy">Use the installer command or download release archives directly from GitHub.</p>
-          <div className="hero-actions"><a className="button button-primary" href="/#install">Recommended install</a><a className="button button-secondary" href={RELEASE_URL}>Latest release</a></div>
+    <a className="download-asset" href={asset.browser_download_url}>
+      <span className="download-arrow" aria-hidden="true">↓</span>
+      <span>{asset.name}</span>
+      {asset.size ? <small>{formatSize(asset.size)}</small> : null}
+    </a>
+  );
+}
+
+function DownloadGroup({ group, assets, release }) {
+  return (
+    <div className="download-os-group">
+      <h3 className={`download-os-title os-${group.icon}`}>{group.label}</h3>
+      <div className="download-asset-list">
+        {assets.length ? assets.map((asset) => <DownloadAssetLink asset={asset} key={asset.id || asset.name} />) : (
+          <a className="download-asset muted" href={release.html_url}>
+            <span className="download-arrow" aria-hidden="true">↗</span>
+            <span>View release assets on GitHub</span>
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Downloads() {
+  const { loading, error, releases } = useGitHubReleases();
+  const releaseList = releases.length ? releases : [FALLBACK_RELEASE];
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const selectedRelease = releaseList[Math.min(selectedIndex, releaseList.length - 1)] || FALLBACK_RELEASE;
+  const groupedAssets = groupAssets(selectedRelease.assets || []);
+  const notes = releaseNotes(selectedRelease);
+
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [releases.length]);
+
+  return (
+    <main id="top" className="downloads-page">
+      <section className="downloads-hero">
+        <div className="downloads-container reveal">
+          <div>
+            <p className="section-kicker">Releases</p>
+            <h1>AiSH Releases</h1>
+            <p className="downloads-copy">Download previous AiSH builds and inspect release notes. This page reads version data from the public GitHub Releases API, so release cards update when new builds ship.</p>
+          </div>
+          <a className="button button-secondary downloads-changelog-button" href={`${GITHUB_URL}/releases`}>View changelog</a>
         </div>
       </section>
-      <InstallTabs />
-      <Cta />
+
+      <section className="downloads-browser" aria-label="AiSH release downloads">
+        <div className="downloads-container downloads-browser-inner reveal">
+          <div className="release-tabs" role="tablist" aria-label="Release streams">
+            <button className="release-tab active" type="button">Stable releases</button>
+            <a className="release-tab" href={`${GITHUB_URL}/actions`}>Build history</a>
+          </div>
+
+          <div className="release-grid">
+            <aside className="release-version-list" aria-label="Release versions">
+              <div className="release-version-heading">Version</div>
+              {loading ? <p className="release-loading">Loading GitHub releases…</p> : null}
+              {error ? <p className="release-error">{error}</p> : null}
+              {releaseList.map((release, index) => (
+                <button
+                  className={`release-version ${index === selectedIndex ? 'active' : ''}`}
+                  key={release.id || release.tag_name}
+                  onClick={() => setSelectedIndex(index)}
+                  type="button"
+                >
+                  <span>{release.tag_name || releaseName(release)}</span>
+                  <small>{formatDate(release.published_at)}</small>
+                </button>
+              ))}
+            </aside>
+
+            <div className="download-groups">
+              <div className="release-summary">
+                <div>
+                  <p className="release-label">Selected release</p>
+                  <h2>{releaseName(selectedRelease)}</h2>
+                </div>
+                <a className="release-open" href={selectedRelease.html_url}>Open on GitHub</a>
+              </div>
+
+              <div className="download-os-grid">
+                {DOWNLOAD_GROUPS.map((group) => (
+                  <DownloadGroup group={group} assets={groupedAssets[group.key] || []} release={selectedRelease} key={group.key} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="release-changelog-section">
+        <div className="downloads-container changelog-card reveal">
+          <div>
+            <p className="section-kicker">Changelog</p>
+            <h2>{selectedRelease.tag_name || 'Latest'} notes</h2>
+          </div>
+          <ul className="changelog-list">
+            {notes.map((line) => <li key={line}>{line}</li>)}
+          </ul>
+        </div>
+      </section>
     </main>
   );
 }
