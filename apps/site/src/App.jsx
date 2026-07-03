@@ -359,11 +359,13 @@ function groupAssets(assets = []) {
 function releaseNotes(release) {
   const body = (release?.body || '').trim();
   if (!body) return ['No changelog text was published for this release yet.'];
-  return body
+  const notes = body
     .split('\n')
-    .map((line) => line.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean)
-    .slice(0, 7);
+    .map((line) => line.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').replace(/\*\*/g, '').trim())
+    .filter((line) => line && !/^full changelog:?/i.test(line) && !/^https?:\/\//i.test(line))
+    .map((line) => line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1'))
+    .slice(0, 5);
+  return notes.length ? notes : ['This release is available on GitHub. Open the release page for the full changelog and all generated assets.'];
 }
 
 function LogoMark({ className = 'brand-mark', variant = 'icon' }) {
@@ -576,7 +578,7 @@ function DownloadGroup({ group, assets, release }) {
         {assets.length ? assets.map((asset) => <DownloadAssetLink asset={asset} key={asset.id || asset.name} />) : (
           <a className="download-asset muted" href={release.html_url}>
             <span className="download-arrow" aria-hidden="true">↗</span>
-            <span>View release assets on GitHub</span>
+            <span>Open release assets on GitHub</span>
           </a>
         )}
       </div>
@@ -601,9 +603,9 @@ function Downloads() {
       <section className="downloads-hero">
         <div className="downloads-container reveal">
           <div>
-            <p className="section-kicker">Releases</p>
+            <p className="section-kicker">Downloads</p>
             <h1>AiSH Releases</h1>
-            <p className="downloads-copy">Download previous AiSH builds and inspect release notes. This page reads version data from the public GitHub Releases API, so release cards update when new builds ship.</p>
+            <p className="downloads-copy">Download AiSH builds by version. Release data, assets, and changelog notes are pulled from GitHub Releases.</p>
           </div>
           <a className="button button-secondary downloads-changelog-button" href={`${GITHUB_URL}/releases`}>View changelog</a>
         </div>
