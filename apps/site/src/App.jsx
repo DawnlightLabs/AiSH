@@ -314,9 +314,10 @@ function Home() {
 function Footer() {
   return (
     <footer>
+      <div className="footer-stage" aria-hidden="true">AiSH</div>
       <div className="container footer-inner">
-        <span>© {new Date().getFullYear()} Dawnlight Labs</span>
-        <span>AiSH — Artificially Intelligent Shell</span>
+        <span className="footer-copy">© {new Date().getFullYear()} <span className="footer-dawnlight">Dawnlight Labs</span></span>
+        <span className="footer-tagline">AiSH — Artificially Intelligent Shell</span>
       </div>
     </footer>
   );
