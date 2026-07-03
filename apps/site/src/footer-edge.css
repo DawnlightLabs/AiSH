@@ -3,18 +3,19 @@
 footer.site-footer {
   position: relative;
   width: 100%;
-  margin-top: 0;
-  padding: clamp(72px, 9vw, 132px) 0 0;
+  margin-top: -34px;
+  padding: clamp(104px, 12vw, 176px) 0 0;
   border-top: 0;
   overflow: hidden;
   isolation: isolate;
   background:
     radial-gradient(circle at 7% 90%, rgba(64, 148, 183, 0.08), transparent 22rem),
-    radial-gradient(circle at 90% 22%, rgba(224, 183, 95, 0.22), transparent 28rem),
+    radial-gradient(circle at 90% 22%, rgba(224, 183, 95, 0.2), transparent 30rem),
     linear-gradient(180deg,
       rgba(249, 242, 231, 0) 0%,
-      rgba(239, 229, 214, 0.22) 24%,
-      rgba(232, 220, 201, 0.72) 58%,
+      rgba(246, 238, 224, 0.04) 14%,
+      rgba(239, 229, 214, 0.18) 34%,
+      rgba(232, 220, 201, 0.68) 68%,
       rgba(226, 214, 195, 0.94) 100%);
 }
 
@@ -28,20 +29,20 @@ footer.site-footer::after {
 
 footer.site-footer::before {
   z-index: 0;
-  top: -42%;
-  right: -22%;
-  width: min(78vw, 1080px);
-  height: 158%;
-  opacity: 0.72;
+  top: -72%;
+  right: -25%;
+  width: min(84vw, 1160px);
+  height: 206%;
+  opacity: 0.68;
   background:
-    linear-gradient(132deg, transparent 0 12%, rgba(255, 246, 211, 0.58) 17%, transparent 30%),
-    linear-gradient(140deg, transparent 0 24%, rgba(224, 183, 95, 0.38) 30%, transparent 44%),
-    linear-gradient(148deg, transparent 0 39%, rgba(255, 255, 255, 0.5) 45%, transparent 58%),
-    linear-gradient(156deg, transparent 0 56%, rgba(196, 152, 71, 0.3) 63%, transparent 77%),
-    radial-gradient(ellipse at 78% 12%, rgba(255, 239, 181, 0.84), rgba(224, 183, 95, 0.28) 30%, transparent 66%);
+    linear-gradient(132deg, transparent 0 12%, rgba(255, 246, 211, 0.5) 17%, transparent 31%),
+    linear-gradient(140deg, transparent 0 24%, rgba(224, 183, 95, 0.35) 30%, transparent 45%),
+    linear-gradient(148deg, transparent 0 39%, rgba(255, 255, 255, 0.46) 45%, transparent 59%),
+    linear-gradient(156deg, transparent 0 56%, rgba(196, 152, 71, 0.28) 63%, transparent 78%),
+    radial-gradient(ellipse at 78% 12%, rgba(255, 239, 181, 0.78), rgba(224, 183, 95, 0.25) 32%, transparent 68%);
   background-size: 118% 118%, 124% 124%, 120% 120%, 128% 128%, 100% 100%;
   background-position: 0 0, 12px -20px, -20px 16px, 18px 28px, 0 0;
-  filter: blur(22px) saturate(1.08);
+  filter: blur(30px) saturate(1.08);
   transform: translate(0, 0) rotate(-5deg) scale(1);
   mix-blend-mode: screen;
   animation:
@@ -52,12 +53,13 @@ footer.site-footer::before {
 footer.site-footer::after {
   z-index: 0;
   inset: 0;
-  opacity: 0.24;
+  opacity: 0.2;
   background:
     linear-gradient(rgba(48, 38, 29, 0.032) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(48, 38, 29, 0.028) 1px, transparent 1px);
-  background-size: 46px 46px;
-  mask-image: linear-gradient(180deg, transparent 0%, black 22%, black 100%);
+    linear-gradient(90deg, rgba(48, 38, 29, 0.028) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(249, 242, 231, 0.8), rgba(249, 242, 231, 0) 28%);
+  background-size: 46px 46px, 46px 46px, 100% 100%;
+  mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.3) 18%, black 38%, black 100%);
 }
 
 .footer-shell.container,
@@ -69,7 +71,7 @@ footer.site-footer::after {
   min-height: clamp(255px, 26vw, 390px);
   margin-left: calc(50% - 50vw);
   margin-right: calc(50% - 50vw);
-  padding: clamp(18px, 3.5vw, 42px) clamp(22px, 7vw, 108px) clamp(26px, 4vw, 50px);
+  padding: clamp(10px, 2vw, 28px) clamp(22px, 7vw, 108px) clamp(26px, 4vw, 50px);
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -81,12 +83,12 @@ footer.site-footer::after {
   content: "";
   position: absolute;
   z-index: 0;
-  inset: -22% 0 0;
+  inset: -36% 0 0;
   pointer-events: none;
   background:
     radial-gradient(circle at 9% 88%, rgba(64, 148, 183, 0.1), transparent 20rem),
-    radial-gradient(circle at 88% 22%, rgba(224, 183, 95, 0.16), transparent 20rem),
-    linear-gradient(180deg, transparent, rgba(255, 250, 242, 0.1) 36%, rgba(255, 250, 242, 0.2));
+    radial-gradient(circle at 88% 22%, rgba(224, 183, 95, 0.15), transparent 20rem),
+    linear-gradient(180deg, transparent, rgba(255, 250, 242, 0.08) 42%, rgba(255, 250, 242, 0.16));
 }
 
 .footer-word,
@@ -117,45 +119,45 @@ footer.site-footer::after {
 @keyframes footer-sunray-drift {
   0% {
     transform: translate(0, 0) rotate(-5deg) scale(1);
-    opacity: 0.58;
+    opacity: 0.5;
   }
   50% {
     transform: translate(-2.5%, 2%) rotate(-7deg) scale(1.05);
-    opacity: 0.82;
+    opacity: 0.78;
   }
   100% {
     transform: translate(-5%, 3.5%) rotate(-9deg) scale(1.1);
-    opacity: 0.7;
+    opacity: 0.64;
   }
 }
 
 @keyframes footer-sunray-shimmer {
   0% {
     background-position: 0 0, 12px -20px, -20px 16px, 18px 28px, 0 0;
-    filter: blur(24px) saturate(1.04);
+    filter: blur(34px) saturate(1.04);
   }
   100% {
     background-position: 44px -34px, -22px 28px, 28px -18px, -34px 46px, 0 0;
-    filter: blur(18px) saturate(1.18);
+    filter: blur(22px) saturate(1.18);
   }
 }
 
 @media (max-width: 760px) {
   footer.site-footer {
-    margin-top: 0;
-    padding-top: 76px;
+    margin-top: -22px;
+    padding-top: 104px;
   }
 
   footer.site-footer::before {
     right: -46%;
     width: 116vw;
-    opacity: 0.54;
+    opacity: 0.52;
   }
 
   .footer-shell.container,
   .footer-shell {
     min-height: 245px;
-    padding: 20px 20px 26px;
+    padding: 18px 20px 26px;
   }
 
   .footer-word span,
