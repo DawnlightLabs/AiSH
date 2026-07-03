@@ -7,6 +7,7 @@ INSTALL_ROOT="${AISH_INSTALL_ROOT:-$HOME/.local/aish}"
 BIN_DIR="$INSTALL_ROOT/bin"
 BIN_PATH="$BIN_DIR/aish"
 HEADLESS="${AISH_HEADLESS:-0}"
+SKIP_MODEL="${AISH_SKIP_MODEL:-0}"
 
 detect_os() {
   case "$(uname -s)" in
@@ -67,7 +68,13 @@ cp "$found" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 
 if [ "$HEADLESS" = "1" ]; then
-  "$BIN_PATH" --install-headless --add-path --set-model-path --editor-profiles --model-check
+  setup_args=(--install-headless --add-path --set-model-path --editor-profiles)
+  if [ "$SKIP_MODEL" = "1" ]; then
+    setup_args+=(--skip-model)
+  else
+    setup_args+=(--model-check)
+  fi
+  "$BIN_PATH" "${setup_args[@]}"
 else
   "$BIN_PATH" --install
 fi
