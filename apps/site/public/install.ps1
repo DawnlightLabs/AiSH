@@ -1,11 +1,11 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [switch]$Headless,
   [string]$Version = "latest"
 )
 
-$Repo = "amaansyed27/aish"
+$ErrorActionPreference = "Stop"
+
+$Repo = "DawnlightLabs/AiSH"
 $InstallRoot = Join-Path $env:LOCALAPPDATA "AiSH"
 $BinDir = Join-Path $InstallRoot "bin"
 $ExePath = Join-Path $BinDir "aish.exe"
