@@ -5,5 +5,6 @@ import './styles.css';
 import './feature-stage.css';
 import './footer-glitch.css';
 import './hero-glitch.css';
+import './install-floaters.css';
 
 createRoot(document.getElementById('root')).render(<App />);
