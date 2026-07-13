@@ -1,8 +1,11 @@
+#[path = "../windows_brand.rs"]
+mod windows_brand;
+
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const WINDOWS_UNINSTALLER: &str = include_str!("../windows_uninstall.ps1");
 const WINDOWS_REGISTER_SCRIPT: &str = include_str!("../windows_register.ps1");
@@ -90,6 +93,8 @@ fn repair_windows_app_registration(version: &str, quiet: bool) -> Result<(), Str
     if !status.success() {
         return Err("PowerShell failed to register AiSH as a Windows application".to_string());
     }
+
+    windows_brand::refresh_windows_branding(&current, &install_root, version, false)?;
 
     if !quiet {
         println!("AiSH is registered in the Start menu and Installed apps.");
@@ -208,6 +213,8 @@ fn windows_registration_present() -> bool {
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\AiSH",
         ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false);

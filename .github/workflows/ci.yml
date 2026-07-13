@@ -106,16 +106,53 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $extract 'aish.exe'))) {
             throw 'Windows updater extraction smoke test failed.'
           }
-      - name: Verify Windows app registration lifecycle
+      - name: Verify Windows branding and silent startup
         shell: pwsh
         run: |
-          $exe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
-          & $exe --repair-install --quiet
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $installRoot = Join-Path $env:LOCALAPPDATA 'AiSH'
+          $managedExe = Join-Path $installRoot 'bin\aish.exe'
+          New-Item -ItemType Directory -Force -Path (Split-Path $managedExe) | Out-Null
+          Copy-Item -LiteralPath $builtExe -Destination $managedExe -Force
+
+          $terminalSettings = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\settings.json'
+          New-Item -ItemType Directory -Force -Path (Split-Path $terminalSettings) | Out-Null
+          '{"profiles":{"list":[]}}' | Set-Content -LiteralPath $terminalSettings -Encoding utf8
+
+          & $managedExe --repair-install --quiet
           if ($LASTEXITCODE -ne 0) { throw 'Registration repair failed.' }
           if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AiSH')) {
             throw 'Installed apps registration was not created.'
           }
-          & $exe --uninstall --yes
+
+          $settings = Get-Content -LiteralPath $terminalSettings -Raw | ConvertFrom-Json
+          $profile = $settings.profiles.list | Where-Object { $_.name -eq 'AiSH' } | Select-Object -First 1
+          if (-not $profile) { throw 'Windows Terminal AiSH profile was not created.' }
+          if (-not $profile.icon -or -not (Test-Path -LiteralPath $profile.icon)) {
+            throw 'Windows Terminal AiSH profile does not reference the installed logo.'
+          }
+
+          $model = Join-Path $env:RUNNER_TEMP 'aish-ci-model.gguf'
+          $stream = [System.IO.File]::Open($model, [System.IO.FileMode]::Create)
+          try {
+            $stream.SetLength(16MB)
+            $magic = [System.Text.Encoding]::ASCII.GetBytes('GGUF')
+            $stream.Position = 0
+            $stream.Write($magic, 0, $magic.Length)
+          } finally {
+            $stream.Dispose()
+          }
+          $env:AISH_MODEL_PATH = $model
+          $env:AISH_SKIP_UPDATE_CHECK = '1'
+          $output = "/exit" | & $managedExe 2>&1 | Out-String
+          if ($output -match 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\AiSH') {
+            throw 'AiSH leaked the registry probe into terminal startup output.'
+          }
+          if ($output -notmatch 'AiSH provider shell') {
+            throw 'AiSH provider shell did not start successfully.'
+          }
+
+          & $managedExe --uninstall --yes
           if ($LASTEXITCODE -ne 0) { throw 'Uninstall smoke test failed.' }
 
   site-build:
