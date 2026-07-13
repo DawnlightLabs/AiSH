@@ -1,78 +1,107 @@
-name: Version Bump
+name: Release Version
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "New version, for example 1.2.2"
+        description: "New version, for example 0.4.0"
         required: true
         type: string
-      publish_release:
-        description: "Push vVERSION tag after the bump"
+      make_latest:
+        description: "Mark the GitHub release as latest"
         required: true
         default: "true"
         type: choice
         options:
           - "true"
           - "false"
+      prerelease:
+        description: "Publish as a prerelease"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  push:
+    branches:
+      - "release/v*"
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-version-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   bump:
-    name: bump-version
+    name: bump-and-tag
     runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Validate version
+      - name: Resolve and validate version
+        id: version
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
-          case "$VERSION" in
-            v*) echo "Use 1.2.2, not v1.2.2" >&2; exit 1 ;;
-          esac
-          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
-            echo "Version must look like 1.2.2" >&2
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            raw="${{ inputs.version }}"
+          else
+            raw="${GITHUB_REF_NAME#release/v}"
+          fi
+          version="${raw#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must look exactly like 0.4.0" >&2
             exit 1
           fi
-          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-            echo "Tag v$VERSION already exists" >&2
+          if git rev-parse "v$version" >/dev/null 2>&1; then
+            echo "Tag v$version already exists" >&2
             exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: Update package version
         shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
           perl -0pi -e 's/^version = "[^"]+"/version = "'"$VERSION"'"/m' apps/provider-shell/Cargo.toml
           cargo generate-lockfile
+          actual="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/provider-shell/Cargo.toml | head -n1)"
+          test "$actual" = "$VERSION"
 
-      - name: Commit bump
+      - name: Commit version and push tag
         shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add apps/provider-shell/Cargo.toml Cargo.lock
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
+          if ! git diff --cached --quiet; then
             git commit -m "Bump AiSH to v$VERSION"
-            git push
+            git push origin HEAD:main
           fi
-
-      - name: Push release tag
-        if: inputs.publish_release == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${{ inputs.version }}"
           git tag "v$VERSION"
           git push origin "v$VERSION"
+
+  publish:
+    name: build-and-publish
+    needs: bump
+    uses: ./.github/workflows/provider-release.yml
+    with:
+      version: ${{ needs.bump.outputs.tag }}
+      make_latest: ${{ github.event_name == 'workflow_dispatch' && inputs.make_latest || 'true' }}
+      prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || 'false' }}
+    secrets: inherit
