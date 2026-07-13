@@ -265,10 +265,10 @@ fn extract_archive(asset: &str, archive_path: &Path, extract_dir: &Path) -> Resu
                 "-NoLogo",
                 "-NoProfile",
                 "-Command",
-                "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
-                &archive_path.display().to_string(),
-                &extract_dir.display().to_string(),
+                "Expand-Archive -LiteralPath $env:AISH_UPDATE_ARCHIVE -DestinationPath $env:AISH_UPDATE_EXTRACT_DIR -Force",
             ])
+            .env("AISH_UPDATE_ARCHIVE", archive_path)
+            .env("AISH_UPDATE_EXTRACT_DIR", extract_dir)
             .status()
     } else {
         Command::new("tar")
