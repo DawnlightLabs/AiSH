@@ -1,6 +1,29 @@
 {
   "verified": false,
-  "missing": [],
-  "release": null,
-  "error": "release not found"
+  "missing": [
+    "aish-windows-x64.zip",
+    "aish-windows-x64.zip.sha256",
+    "aish-windows-arm64.zip",
+    "aish-windows-arm64.zip.sha256",
+    "aish-macos-arm64.tar.gz",
+    "aish-macos-arm64.tar.gz.sha256",
+    "aish-linux-x64.tar.gz",
+    "aish-linux-x64.tar.gz.sha256",
+    "aish-linux-arm64.tar.gz",
+    "aish-linux-arm64.tar.gz.sha256",
+    "install",
+    "install.sh",
+    "install.ps1"
+  ],
+  "release": {
+    "assets": [],
+    "body": "# AiSH 0.3.0 — First stable release\n\nAiSH 0.3.0 is the first stable provider-shell release from Dawnlight Labs.\n\n- AiSH now checks for a newer stable release at most once every 24 hours when the shell starts and asks before installing it.\n- Updates replace the current platform binary directly; uninstalling and reinstalling AiSH is not required.\n- Windows updates refresh Start menu, App Paths, and Installed apps registration after the new binary is applied.\n- Added `aish --uninstall` and `aish --uninstall --yes` for complete user-level removal.\n- Windows uninstall removes AiSH from PATH, Start menu, Installed apps, Windows Terminal, and supported editor terminal profiles.\n- Fresh Windows installs continue to work without administrator privileges.\n- Manual `/update` and `aish --update` checks remain available.\n\n## Upgrade from 0.2.x\n\nExisting 0.2.x installations do not contain the new automatic prompt yet. Run `/update` inside AiSH or `aish --update` once to install 0.3.0. After restarting AiSH, future releases will be detected automatically.\n\n## Install\n\nWindows PowerShell:\n\n```powershell\nirm https://aish.dawnlightlabs.com/install.ps1 | iex\n```\n\nmacOS and Linux:\n\n```bash\ncurl -fsSL https://aish.dawnlightlabs.com/install | bash\n```\n\n## Uninstall\n\n```bash\naish --uninstall\n```\n\nModels stored outside the AiSH installation directory are preserved during uninstall.\n",
+    "isDraft": false,
+    "isPrerelease": false,
+    "name": "AiSH v0.3.0",
+    "publishedAt": "2026-07-13T11:56:36Z",
+    "tagName": "v0.3.0",
+    "url": "https://github.com/DawnlightLabs/AiSH/releases/tag/v0.3.0"
+  },
+  "error": null
 }
