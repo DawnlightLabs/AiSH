@@ -30,6 +30,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build provider shell
         run: cargo build -p aish-provider-shell
+      - name: Verify staged installer copy
+        shell: pwsh
+        run: |
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $stagedRoot = Join-Path $env:RUNNER_TEMP 'AiSH staged install'
+          Remove-Item -LiteralPath $stagedRoot -Recurse -Force -ErrorAction SilentlyContinue
+          & $builtExe --install-headless --install-dir $stagedRoot --skip-model --no-add-path --no-set-model-path --no-windows-terminal --no-editor-profiles
+          if ($LASTEXITCODE -ne 0) { throw 'Staged provider setup failed.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $stagedRoot 'bin\aish.exe'))) {
+            throw 'Staged provider setup did not create the managed executable.'
+          }
       - name: Verify embedded Windows icon resource
         shell: pwsh
         run: |
@@ -106,7 +117,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $extract 'aish.exe'))) {
             throw 'Windows updater extraction smoke test failed.'
           }
-      - name: Verify Windows branding and silent startup
+      - name: Verify Windows branding and terminal settings repair
         shell: pwsh
         run: |
           $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
@@ -117,7 +128,11 @@ jobs:
 
           $terminalSettings = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\settings.json'
           New-Item -ItemType Directory -Force -Path (Split-Path $terminalSettings) | Out-Null
-          '{"profiles":{"list":[]}}' | Set-Content -LiteralPath $terminalSettings -Encoding utf8
+          [System.IO.File]::WriteAllBytes($terminalSettings, [byte[]](0xEF, 0xBB, 0xBF))
+
+          $previewSettings = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json'
+          New-Item -ItemType Directory -Force -Path (Split-Path $previewSettings) | Out-Null
+          Set-Content -LiteralPath $previewSettings -Value '{broken-json' -NoNewline
 
           & $managedExe --repair-install --quiet
           if ($LASTEXITCODE -ne 0) { throw 'Registration repair failed.' }
@@ -125,11 +140,16 @@ jobs:
             throw 'Installed apps registration was not created.'
           }
 
-          $settings = Get-Content -LiteralPath $terminalSettings -Raw | ConvertFrom-Json
-          $profile = $settings.profiles.list | Where-Object { $_.name -eq 'AiSH' } | Select-Object -First 1
-          if (-not $profile) { throw 'Windows Terminal AiSH profile was not created.' }
-          if (-not $profile.icon -or -not (Test-Path -LiteralPath $profile.icon)) {
-            throw 'Windows Terminal AiSH profile does not reference the installed logo.'
+          foreach ($settingsPath in @($terminalSettings, $previewSettings)) {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            $profile = $settings.profiles.list | Where-Object { $_.name -eq 'AiSH' } | Select-Object -First 1
+            if (-not $profile) { throw "Windows Terminal AiSH profile was not created in $settingsPath." }
+            if (-not $profile.icon -or -not (Test-Path -LiteralPath $profile.icon)) {
+              throw "Windows Terminal AiSH profile does not reference the installed logo in $settingsPath."
+            }
+          }
+          if (-not (Test-Path -LiteralPath "$previewSettings.aish-backup")) {
+            throw 'Malformed Windows Terminal settings were not backed up.'
           }
 
           $model = Join-Path $env:RUNNER_TEMP 'aish-ci-model.gguf'
