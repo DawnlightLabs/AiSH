@@ -24,7 +24,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          set -euo pipefail
+          set -u
           expected=(
             aish-windows-x64.zip
             aish-windows-x64.zip.sha256
@@ -41,27 +41,34 @@ jobs:
             install.ps1
           )
 
-          data=$(gh release view v0.3.0 --repo "$GH_REPO" --json tagName,name,isDraft,isPrerelease,isLatest,publishedAt,assets,body)
-          mapfile -t names < <(jq -r '.assets[].name' <<<"$data")
-          missing=()
-          for asset in "${expected[@]}"; do
-            if ! printf '%s\n' "${names[@]}" | grep -Fxq "$asset"; then
-              missing+=("$asset")
-            fi
-          done
-
-          missing_json='[]'
-          if [[ ${#missing[@]} -gt 0 ]]; then
-            missing_json=$(printf '%s\n' "${missing[@]}" | jq -R . | jq -s .)
-          fi
-
           mkdir -p docs
-          jq -n \
-            --argjson verified "$( [[ ${#missing[@]} -eq 0 ]] && echo true || echo false )" \
-            --argjson missing "$missing_json" \
-            --argjson release "$data" \
-            '{verified: $verified, missing: $missing, release: $release}' \
-            > docs/release-v0.3.0-status.json
+          error_file=$(mktemp)
+          if data=$(gh release view v0.3.0 --repo "$GH_REPO" --json tagName,name,isDraft,isPrerelease,publishedAt,assets,body,url 2>"$error_file"); then
+            mapfile -t names < <(jq -r '.assets[].name' <<<"$data")
+            missing=()
+            for asset in "${expected[@]}"; do
+              if ! printf '%s\n' "${names[@]}" | grep -Fxq "$asset"; then
+                missing+=("$asset")
+              fi
+            done
+
+            missing_json='[]'
+            if [[ ${#missing[@]} -gt 0 ]]; then
+              missing_json=$(printf '%s\n' "${missing[@]}" | jq -R . | jq -s .)
+            fi
+
+            jq -n \
+              --argjson verified "$( [[ ${#missing[@]} -eq 0 ]] && echo true || echo false )" \
+              --argjson missing "$missing_json" \
+              --argjson release "$data" \
+              '{verified: $verified, missing: $missing, release: $release, error: null}' \
+              > docs/release-v0.3.0-status.json
+          else
+            error=$(cat "$error_file")
+            jq -n --arg error "$error" \
+              '{verified: false, missing: [], release: null, error: $error}' \
+              > docs/release-v0.3.0-status.json
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
