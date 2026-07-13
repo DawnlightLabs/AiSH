@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  publish-and-verify:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -21,29 +21,94 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Bump main and push release tag
+      - name: Ensure main is bumped and tagged
         shell: bash
         run: |
           set -euo pipefail
           VERSION="0.2.2"
           TAG="v$VERSION"
 
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "$TAG already exists; no release action required."
-            exit 0
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            perl -0pi -e 's/^version = "[^"]+"/version = "'"$VERSION"'"/m' apps/provider-shell/Cargo.toml
+            cargo generate-lockfile
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add apps/provider-shell/Cargo.toml Cargo.lock
+
+            if ! git diff --cached --quiet; then
+              git commit -m "Bump AiSH to v$VERSION"
+              git push origin HEAD:main
+            fi
+
+            git tag "$TAG"
+            git push origin "$TAG"
+          else
+            echo "$TAG already exists."
           fi
 
-          perl -0pi -e 's/^version = "[^"]+"/version = "'"$VERSION"'"/m' apps/provider-shell/Cargo.toml
-          cargo generate-lockfile
+      - name: Verify published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG="v0.2.2"
+          expected_assets=(
+            aish-windows-x64.zip
+            aish-windows-x64.zip.sha256
+            aish-windows-arm64.zip
+            aish-windows-arm64.zip.sha256
+            aish-macos-arm64.tar.gz
+            aish-macos-arm64.tar.gz.sha256
+            aish-linux-x64.tar.gz
+            aish-linux-x64.tar.gz.sha256
+            aish-linux-arm64.tar.gz
+            aish-linux-arm64.tar.gz.sha256
+            install
+            install.sh
+            install.ps1
+          )
 
+          verified=false
+          for attempt in $(seq 1 60); do
+            if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+              asset_names="$(gh release view "$TAG" --repo "$GH_REPO" --json assets --jq '.assets[].name')"
+              body="$(gh release view "$TAG" --repo "$GH_REPO" --json body --jq '.body')"
+              missing=0
+
+              for asset in "${expected_assets[@]}"; do
+                if ! grep -Fxq "$asset" <<<"$asset_names"; then
+                  missing=1
+                  break
+                fi
+              done
+
+              if [[ "$missing" -eq 0 ]] && grep -Fq "Windows installs now register AiSH" <<<"$body"; then
+                verified=true
+                break
+              fi
+            fi
+
+            echo "Release assets are still being published (attempt $attempt/60)."
+            sleep 10
+          done
+
+          if [[ "$verified" != "true" ]]; then
+            echo "v0.2.2 release verification failed." >&2
+            exit 1
+          fi
+
+          git fetch origin release/v0.2.2
+          git checkout release/v0.2.2
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add apps/provider-shell/Cargo.toml Cargo.lock
-
-          if ! git diff --cached --quiet; then
-            git commit -m "Bump AiSH to v$VERSION"
-            git push origin HEAD:main
-          fi
-
-          git tag "$TAG"
-          git push origin "$TAG"
+          mkdir -p docs/releases
+          printf '%s\n' \
+            'v0.2.2 verified' \
+            'All provider binaries, checksums, install scripts, and curated changelog notes are published.' \
+            > docs/releases/v0.2.2-verified.txt
+          git add docs/releases/v0.2.2-verified.txt
+          git commit -m "Verify v0.2.2 release"
+          git push origin HEAD:release/v0.2.2
