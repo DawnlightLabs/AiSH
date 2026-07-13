@@ -1,0 +1,45 @@
+{
+  "source": "Approved AiSH caret logo (^_^)",
+  "variants": [
+    "full-horizontal",
+    "wordmark",
+    "wordmark-tagline",
+    "icon",
+    "stacked",
+    "app-icon",
+    "social-card"
+  ],
+  "colors": [
+    "black",
+    "white",
+    "graphite",
+    "dark-tile",
+    "light-tile"
+  ],
+  "icon_sizes": [
+    16,
+    32,
+    48,
+    64,
+    96,
+    128,
+    180,
+    192,
+    256,
+    384,
+    512,
+    1024
+  ],
+  "full_logo_widths": [
+    600,
+    900,
+    1200,
+    1600,
+    2400
+  ],
+  "social_sizes": [
+    "1200x630",
+    "1280x640",
+    "1500x500"
+  ]
+}

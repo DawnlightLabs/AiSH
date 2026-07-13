@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 560" role="img" aria-label="AiSH icon">
+<title>AiSH icon</title>
+<g fill="none" stroke="currentColor" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M256 30 60 145v255l95 56"/>
+  <path d="M256 30 452 145v255l-95 56"/>
+  <path d="M165 456 224 526"/>
+  <path d="M347 456 288 526"/>
+  <path d="M224 526h64"/>
+  <path d="m142 282 42-58 42 58"/>
+  <path d="m286 282 42-58 42 58"/>
+  <path d="M218 352h76"/>
+</g>
+</svg>
