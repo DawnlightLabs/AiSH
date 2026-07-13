@@ -30,6 +30,66 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build provider shell
         run: cargo build -p aish-provider-shell
+      - name: Verify embedded Windows icon resource
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class AiSHResourceCheck {
+              public delegate bool EnumResourceNameProc(
+                  IntPtr module,
+                  IntPtr type,
+                  IntPtr name,
+                  IntPtr parameter
+              );
+
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr LoadLibraryEx(
+                  string fileName,
+                  IntPtr file,
+                  uint flags
+              );
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool EnumResourceNames(
+                  IntPtr module,
+                  IntPtr type,
+                  EnumResourceNameProc callback,
+                  IntPtr parameter
+              );
+
+              [DllImport("kernel32.dll")]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+
+          $module = [AiSHResourceCheck]::LoadLibraryEx($exe, [IntPtr]::Zero, 0x2)
+          if ($module -eq [IntPtr]::Zero) {
+            throw 'Could not open aish.exe as a Windows resource image.'
+          }
+
+          try {
+            $script:foundIcon = $false
+            $callback = [AiSHResourceCheck+EnumResourceNameProc]{
+              param($moduleHandle, $resourceType, $resourceName, $parameter)
+              $script:foundIcon = $true
+              return $true
+            }
+            [AiSHResourceCheck]::EnumResourceNames(
+              $module,
+              [IntPtr]14,
+              $callback,
+              [IntPtr]::Zero
+            ) | Out-Null
+            if (-not $script:foundIcon) {
+              throw 'aish.exe does not contain an RT_GROUP_ICON resource.'
+            }
+          } finally {
+            [AiSHResourceCheck]::FreeLibrary($module) | Out-Null
+          }
       - name: Verify updater archive argument transport
         shell: pwsh
         run: |
