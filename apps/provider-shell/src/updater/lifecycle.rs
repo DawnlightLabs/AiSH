@@ -58,9 +58,15 @@ fn repair_windows_app_registration(version: &str, quiet: bool) -> Result<(), Str
     let current = env::current_exe().map_err(|error| error.to_string())?;
     let install_root = windows_install_root();
     fs::create_dir_all(&install_root).map_err(|error| error.to_string())?;
+
     let uninstaller = install_root.join("uninstall.ps1");
     fs::write(&uninstaller, WINDOWS_UNINSTALLER).map_err(|error| error.to_string())?;
 
+    let registration_script = install_root.join("register.ps1");
+    fs::write(&registration_script, WINDOWS_REGISTER_SCRIPT)
+        .map_err(|error| error.to_string())?;
+
+    let registration_text = registration_script.display().to_string();
     let exe = current.display().to_string();
     let root = install_root.display().to_string();
     let status = Command::new("powershell.exe")
@@ -69,10 +75,13 @@ fn repair_windows_app_registration(version: &str, quiet: bool) -> Result<(), Str
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
-            "-Command",
-            WINDOWS_REGISTER_SCRIPT,
+            "-File",
+            &registration_text,
+            "-ExePath",
             &exe,
+            "-InstallRoot",
             &root,
+            "-DisplayVersion",
             version,
         ])
         .status()

@@ -23,6 +23,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check --workspace
 
+  windows-lifecycle-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build provider shell
+        run: cargo build -p aish-provider-shell
+      - name: Verify updater archive argument transport
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'AiSH updater smoke with spaces'
+          $source = Join-Path $root 'source'
+          $archive = Join-Path $root 'aish test.zip'
+          $extract = Join-Path $root 'extract target'
+          New-Item -ItemType Directory -Force -Path $source, $extract | Out-Null
+          Set-Content -LiteralPath (Join-Path $source 'aish.exe') -Value 'smoke'
+          Compress-Archive -LiteralPath (Join-Path $source 'aish.exe') -DestinationPath $archive -Force
+          $env:AISH_UPDATE_ARCHIVE = $archive
+          $env:AISH_UPDATE_EXTRACT_DIR = $extract
+          powershell.exe -NoLogo -NoProfile -Command 'Expand-Archive -LiteralPath $env:AISH_UPDATE_ARCHIVE -DestinationPath $env:AISH_UPDATE_EXTRACT_DIR -Force'
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $extract 'aish.exe'))) {
+            throw 'Windows updater extraction smoke test failed.'
+          }
+      - name: Verify Windows app registration lifecycle
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          & $exe --repair-install --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Registration repair failed.' }
+          if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AiSH')) {
+            throw 'Installed apps registration was not created.'
+          }
+          & $exe --uninstall --yes
+          if ($LASTEXITCODE -ne 0) { throw 'Uninstall smoke test failed.' }
+
   site-build:
     runs-on: ubuntu-22.04
     defaults:
