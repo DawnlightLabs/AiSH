@@ -47,6 +47,10 @@ The old Tauri desktop app has been archived on the `app-provider-archive` branch
 irm https://aish.dawnlightlabs.com/install.ps1 | iex
 ```
 
+The Windows installer is user-level and does not require administrator rights. It registers AiSH in Start menu search and Windows Installed apps, adds the provider shell to PATH, creates the terminal integrations selected during setup, and installs an uninstaller.
+
+Existing Windows users can rerun the same command to repair or add app registration without removing their current AiSH setup first.
+
 ### macOS / Linux
 
 ```bash
@@ -82,6 +86,7 @@ aish --setup
 - Read-only commands can run quickly after validation.
 - Destructive and system-impacting commands require approval.
 - Command previews before execution.
+- Windows Start menu and Installed apps registration.
 - Windows Terminal and VS Code-compatible terminal profile setup.
 - macOS/Linux shell profile setup.
 - Website and release-download flow for public distribution.
@@ -97,8 +102,8 @@ No generated candidate should bypass the safety layer.
 ## Development
 
 ```bash
-git clone https://github.com/amaansyed27/aish.git
-cd aish
+git clone https://github.com/DawnlightLabs/AiSH.git
+cd AiSH
 cargo check --workspace
 cargo build --release -p aish-provider-shell
 npm install
