@@ -76,4 +76,4 @@ jobs:
           git commit -m "Snapshot AiSH v0.3.0 release assets" || true
           git push origin HEAD:release/v0.3.0
 
-# snapshot trigger 2
+# snapshot trigger 3
