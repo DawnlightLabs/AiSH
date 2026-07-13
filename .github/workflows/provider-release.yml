@@ -1,15 +1,26 @@
 name: Provider Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      version:
+        description: "Release tag to publish"
+        required: true
+        type: string
+      make_latest:
+        required: false
+        default: "true"
+        type: string
+      prerelease:
+        required: false
+        default: "false"
+        type: string
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag/version to publish"
+        description: "Release tag, for example v0.4.0"
         required: true
-        default: "v0.3.0"
+        default: "v0.4.0"
         type: string
       make_latest:
         description: "Mark this release as latest"
@@ -27,70 +38,26 @@ on:
         options:
           - "false"
           - "true"
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: write
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.version || github.ref_name }}
   MAKE_LATEST: ${{ inputs.make_latest || 'true' }}
   PRERELEASE: ${{ inputs.prerelease || 'false' }}
 
+concurrency:
+  group: provider-release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  release:
-    name: prepare-release
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Create or update GitHub release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-
-          notes_file="docs/releases/$RELEASE_TAG.md"
-          release_flags=(--title "AiSH $RELEASE_TAG" --repo "$GH_REPO")
-
-          if [[ -f "$notes_file" ]]; then
-            release_flags+=(--notes-file "$notes_file")
-          else
-            release_flags+=(--generate-notes)
-          fi
-
-          if [[ "$PRERELEASE" == "true" ]]; then
-            release_flags+=(--prerelease)
-          fi
-
-          if [[ "$MAKE_LATEST" == "true" ]]; then
-            release_flags+=(--latest)
-          else
-            release_flags+=(--latest=false)
-          fi
-
-          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; refreshing its metadata."
-            edit_flags=(--title "AiSH $RELEASE_TAG" --repo "$GH_REPO")
-            if [[ -f "$notes_file" ]]; then
-              edit_flags+=(--notes-file "$notes_file")
-            fi
-            if [[ "$MAKE_LATEST" == "true" ]]; then
-              edit_flags+=(--latest)
-            fi
-            if [[ "$PRERELEASE" == "true" ]]; then
-              edit_flags+=(--prerelease)
-            fi
-            gh release edit "$RELEASE_TAG" "${edit_flags[@]}"
-          else
-            gh release create "$RELEASE_TAG" "${release_flags[@]}"
-          fi
-
   build:
     name: build-${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    needs: release
     strategy:
       fail-fast: false
       matrix:
@@ -118,71 +85,208 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify release source version
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${RELEASE_TAG#v}"
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must look exactly like v0.4.0" >&2
+            exit 1
+          fi
+          actual="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/provider-shell/Cargo.toml | head -n1)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Tag $RELEASE_TAG contains provider version $actual" >&2
+            exit 1
+          fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build provider shell
-        run: cargo build --release -p aish-provider-shell
+        run: cargo build --release -p aish-provider-shell --locked
+
+      - name: Verify Windows logo resource
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path '${{ matrix.bin }}'
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class ReleaseIconCheck {
+              public delegate bool EnumResourceNameProc(IntPtr module, IntPtr type, IntPtr name, IntPtr parameter);
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr LoadLibraryEx(string fileName, IntPtr file, uint flags);
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool EnumResourceNames(IntPtr module, IntPtr type, EnumResourceNameProc callback, IntPtr parameter);
+              [DllImport("kernel32.dll")]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+          $module = [ReleaseIconCheck]::LoadLibraryEx($exe, [IntPtr]::Zero, 0x2)
+          if ($module -eq [IntPtr]::Zero) { throw 'Could not load aish.exe resources.' }
+          try {
+            $script:found = $false
+            $callback = [ReleaseIconCheck+EnumResourceNameProc]{
+              param($moduleHandle, $resourceType, $resourceName, $parameter)
+              $script:found = $true
+              return $true
+            }
+            [ReleaseIconCheck]::EnumResourceNames($module, [IntPtr]14, $callback, [IntPtr]::Zero) | Out-Null
+            if (-not $script:found) { throw 'Release aish.exe has no embedded AiSH icon.' }
+          } finally {
+            [ReleaseIconCheck]::FreeLibrary($module) | Out-Null
+          }
 
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item ${{ matrix.bin }} dist/aish.exe
-          Compress-Archive -Path dist/aish.exe -DestinationPath ${{ matrix.artifact }} -Force
+          Copy-Item '${{ matrix.bin }}' dist/aish.exe
+          Compress-Archive -Path dist/aish.exe -DestinationPath '${{ matrix.artifact }}' -Force
+          $hash = (Get-FileHash '${{ matrix.artifact }}' -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}" | Set-Content '${{ matrix.artifact }}.sha256'
 
       - name: Package Unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp "${{ matrix.bin }}" dist/aish
           chmod +x dist/aish
           tar -czf "${{ matrix.artifact }}" -C dist aish
-
-      - name: Checksum Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash ${{ matrix.artifact }} -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.artifact }}" | Set-Content "${{ matrix.artifact }}.sha256"
-
-      - name: Checksum Unix
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
           shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
 
-      - name: Upload release assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            "${{ matrix.artifact }}" \
-            "${{ matrix.artifact }}.sha256" \
-            --repo "$GH_REPO" \
-            --clobber
+      - name: Stage release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
+          if-no-files-found: error
+          retention-days: 3
 
-  scripts:
-    name: publish-install-scripts
-    runs-on: ubuntu-22.04
+  publish:
+    name: publish-verified-release
     needs: build
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
 
-      - name: Upload install scripts
+      - name: Download verified artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify complete asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            aish-windows-x64.zip
+            aish-windows-x64.zip.sha256
+            aish-windows-arm64.zip
+            aish-windows-arm64.zip.sha256
+            aish-macos-arm64.tar.gz
+            aish-macos-arm64.tar.gz.sha256
+            aish-linux-x64.tar.gz
+            aish-linux-x64.tar.gz.sha256
+            aish-linux-arm64.tar.gz
+            aish-linux-arm64.tar.gz.sha256
+          )
+          for file in "${expected[@]}"; do
+            test -s "release-assets/$file" || {
+              echo "Missing release asset: $file" >&2
+              exit 1
+            }
+          done
+
+      - name: Create release and upload all assets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+          notes_file="docs/releases/$RELEASE_TAG.md"
+          create_flags=(--verify-tag --title "AiSH $RELEASE_TAG" --repo "$GH_REPO")
+          edit_flags=(--title "AiSH $RELEASE_TAG" --repo "$GH_REPO")
+
+          if [[ -f "$notes_file" ]]; then
+            create_flags+=(--notes-file "$notes_file")
+            edit_flags+=(--notes-file "$notes_file")
+          else
+            create_flags+=(--generate-notes)
+          fi
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            create_flags+=(--prerelease)
+            edit_flags+=(--prerelease)
+          else
+            edit_flags+=(--prerelease=false)
+          fi
+
+          if [[ "$MAKE_LATEST" == "true" ]]; then
+            create_flags+=(--latest)
+            edit_flags+=(--latest)
+          else
+            create_flags+=(--latest=false)
+            edit_flags+=(--latest=false)
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" "${edit_flags[@]}"
+          else
+            gh release create "$RELEASE_TAG" "${create_flags[@]}"
+          fi
+
           gh release upload "$RELEASE_TAG" \
+            release-assets/* \
             apps/site/public/install \
             apps/site/public/install.sh \
             apps/site/public/install.ps1 \
             --repo "$GH_REPO" \
             --clobber
+
+      - name: Verify published release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          expected=(
+            aish-windows-x64.zip
+            aish-windows-x64.zip.sha256
+            aish-windows-arm64.zip
+            aish-windows-arm64.zip.sha256
+            aish-macos-arm64.tar.gz
+            aish-macos-arm64.tar.gz.sha256
+            aish-linux-x64.tar.gz
+            aish-linux-x64.tar.gz.sha256
+            aish-linux-arm64.tar.gz
+            aish-linux-arm64.tar.gz.sha256
+            install
+            install.sh
+            install.ps1
+          )
+          published="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json assets --jq '.assets[].name')"
+          for file in "${expected[@]}"; do
+            grep -Fxq "$file" <<< "$published" || {
+              echo "Published release is missing $file" >&2
+              exit 1
+            }
+          done
