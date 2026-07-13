@@ -61,7 +61,10 @@ if (-not $downloaded) {
   throw "Downloaded archive did not contain aish.exe"
 }
 
-Copy-Item $downloaded.FullName $ExePath -Force
+# Run setup from the extracted staging directory. The provider shell then copies
+# itself into the managed install path. Running the final aish.exe directly here
+# would make setup try to overwrite its own locked executable.
+$SetupExe = $downloaded.FullName
 
 if ($Headless) {
   $setupArgs = @("--install-headless", "--add-path", "--set-model-path", "--windows-terminal", "--editor-profiles")
@@ -70,13 +73,17 @@ if ($Headless) {
   } else {
     $setupArgs += "--model-check"
   }
-  & $ExePath @setupArgs
+  & $SetupExe @setupArgs
 } else {
-  & $ExePath --install
+  & $SetupExe --install
 }
 
 if ($LASTEXITCODE -ne 0) {
   throw "AiSH setup exited with code $LASTEXITCODE"
+}
+
+if (-not (Test-Path -LiteralPath $ExePath)) {
+  throw "AiSH setup did not create $ExePath"
 }
 
 & $ExePath --repair-install --quiet

@@ -72,16 +72,8 @@ fn update_windows_terminal_profiles(
             continue;
         }
 
-        let text = fs::read_to_string(&settings_path)
-            .map_err(|error| format!("failed to read {}: {error}", settings_path.display()))?;
-        let mut json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|error| format!("failed to parse {}: {error}", settings_path.display()))?;
-
-        let profiles = json
-            .get_mut("profiles")
-            .and_then(|profiles| profiles.get_mut("list"))
-            .and_then(|list| list.as_array_mut())
-            .ok_or_else(|| format!("{} does not contain profiles.list", settings_path.display()))?;
+        let mut json = read_or_repair_terminal_settings(&settings_path)?;
+        let profiles = ensure_profile_list(&mut json);
 
         let mut found = false;
         for profile in profiles.iter_mut() {
@@ -121,6 +113,54 @@ fn update_windows_terminal_profiles(
     }
 
     Ok(())
+}
+
+fn read_or_repair_terminal_settings(path: &Path) -> Result<serde_json::Value, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let text = text.trim_start_matches('\u{feff}').trim();
+
+    if text.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+
+    match serde_json::from_str(text) {
+        Ok(json) => Ok(json),
+        Err(_) => {
+            let backup = PathBuf::from(format!("{}.aish-backup", path.display()));
+            let _ = fs::copy(path, backup);
+            Ok(serde_json::json!({}))
+        }
+    }
+}
+
+fn ensure_profile_list(json: &mut serde_json::Value) -> &mut Vec<serde_json::Value> {
+    if !json.is_object() {
+        *json = serde_json::json!({});
+    }
+
+    let root = json
+        .as_object_mut()
+        .expect("terminal settings root was normalized to an object");
+    let profiles = root
+        .entry("profiles".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !profiles.is_object() {
+        *profiles = serde_json::json!({});
+    }
+
+    let profiles = profiles
+        .as_object_mut()
+        .expect("terminal profiles were normalized to an object");
+    let list = profiles
+        .entry("list".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    if !list.is_array() {
+        *list = serde_json::json!([]);
+    }
+
+    list.as_array_mut()
+        .expect("terminal profile list was normalized to an array")
 }
 
 fn windows_terminal_settings_paths() -> Vec<PathBuf> {
