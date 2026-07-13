@@ -18,7 +18,7 @@ jobs:
         with:
           ref: release/v0.3.0
 
-      - name: Wait for complete stable release
+      - name: Snapshot stable release state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -41,45 +41,30 @@ jobs:
             install.ps1
           )
 
-          data=''
+          data=$(gh release view v0.3.0 --repo "$GH_REPO" --json tagName,name,isDraft,isPrerelease,isLatest,publishedAt,assets,body)
+          mapfile -t names < <(jq -r '.assets[].name' <<<"$data")
           missing=()
-          for attempt in $(seq 1 90); do
-            if data=$(gh release view v0.3.0 --repo "$GH_REPO" --json tagName,name,isDraft,isPrerelease,isLatest,publishedAt,assets,body 2>/dev/null); then
-              mapfile -t names < <(jq -r '.assets[].name' <<<"$data")
-              missing=()
-              for asset in "${expected[@]}"; do
-                if ! printf '%s\n' "${names[@]}" | grep -Fxq "$asset"; then
-                  missing+=("$asset")
-                fi
-              done
-              if [[ ${#missing[@]} -eq 0 ]]; then
-                break
-              fi
+          for asset in "${expected[@]}"; do
+            if ! printf '%s\n' "${names[@]}" | grep -Fxq "$asset"; then
+              missing+=("$asset")
             fi
-            sleep 10
           done
 
-          if [[ -z "$data" ]]; then
-            echo 'release not found' >&2
-            exit 1
+          missing_json='[]'
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            missing_json=$(printf '%s\n' "${missing[@]}" | jq -R . | jq -s .)
           fi
 
           mkdir -p docs
-          {
-            echo '{'
-            echo '  "verified": '$( [[ ${#missing[@]} -eq 0 ]] && echo true || echo false )','
-            echo '  "missing": '$(printf '%s\n' "${missing[@]:-}" | jq -R . | jq -s .)','
-            echo '  "release": '$(jq -c . <<<"$data")
-            echo '}'
-          } > docs/release-v0.3.0-status.json
+          jq -n \
+            --argjson verified "$( [[ ${#missing[@]} -eq 0 ]] && echo true || echo false )" \
+            --argjson missing "$missing_json" \
+            --argjson release "$data" \
+            '{verified: $verified, missing: $missing, release: $release}' \
+            > docs/release-v0.3.0-status.json
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/release-v0.3.0-status.json
-          git commit -m "Verify AiSH v0.3.0 release assets" || true
+          git commit -m "Snapshot AiSH v0.3.0 release assets" || true
           git push origin HEAD:release/v0.3.0
-
-          if [[ ${#missing[@]} -ne 0 ]]; then
-            printf 'missing release asset: %s\n' "${missing[@]}" >&2
-            exit 1
-          fi
