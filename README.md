@@ -79,6 +79,40 @@ Legacy setup remains available:
 aish --setup
 ```
 
+## Updates
+
+AiSH checks GitHub Releases at most once every 24 hours when the provider shell starts. When a newer stable release exists, AiSH shows the installed and available versions and asks before applying the update.
+
+Manual update checks remain available:
+
+```bash
+aish --update
+```
+
+Inside the provider shell:
+
+```text
+/update
+```
+
+To disable automatic checks, set `AISH_SKIP_UPDATE_CHECK=1`. The optional `AISH_UPDATE_CHECK_HOURS` environment variable changes the check interval.
+
+## Uninstall
+
+AiSH 0.3.0 and newer can be removed with:
+
+```bash
+aish --uninstall
+```
+
+For unattended removal:
+
+```bash
+aish --uninstall --yes
+```
+
+On Windows this removes the Start menu shortcut, Installed apps entry, App Paths entry, PATH entry, Windows Terminal profile, supported editor terminal profiles, and the installed AiSH files. A separately downloaded model outside the AiSH install directory is preserved.
+
 ## Features
 
 - AI Run mode for shell-aware command planning.
@@ -86,6 +120,7 @@ aish --setup
 - Read-only commands can run quickly after validation.
 - Destructive and system-impacting commands require approval.
 - Command previews before execution.
+- Automatic update availability prompts with explicit approval.
 - Windows Start menu and Installed apps registration.
 - Windows Terminal and VS Code-compatible terminal profile setup.
 - macOS/Linux shell profile setup.

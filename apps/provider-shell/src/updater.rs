@@ -1,12 +1,15 @@
+mod lifecycle;
+
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/DawnlightLabs/AiSH/releases/latest";
 const RELEASE_DOWNLOAD_BASE: &str = "https://github.com/DawnlightLabs/AiSH/releases/download";
+const UPDATE_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone)]
 struct ReleaseInfo {
@@ -31,6 +34,10 @@ pub fn handle_update_args() -> bool {
         return true;
     }
 
+    if lifecycle::handle_args(&args, current_version()) {
+        return true;
+    }
+
     if args.iter().any(|arg| arg == "--update") {
         let assume_yes = args.iter().any(|arg| arg == "--yes" || arg == "-y");
         let should_exit = run_update(assume_yes);
@@ -40,11 +47,69 @@ pub fn handle_update_args() -> bool {
         return true;
     }
 
-    false
+    lifecycle::ensure_windows_app_registration(current_version());
+    maybe_prompt_for_update()
 }
 
 pub fn run_update_flow() -> bool {
     run_update(false)
+}
+
+fn maybe_prompt_for_update() -> bool {
+    if env::var("AISH_SKIP_UPDATE_CHECK").ok().as_deref() == Some("1") {
+        return false;
+    }
+
+    if !update_check_due() {
+        return false;
+    }
+
+    let release = match fetch_latest_release() {
+        Ok(release) => {
+            record_update_check();
+            release
+        }
+        Err(error) => {
+            record_update_check();
+            if env::var("AISH_UPDATE_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!("automatic update check failed: {error}");
+            }
+            return false;
+        }
+    };
+
+    let current = current_version();
+    let latest = normalize_version(&release.tag_name);
+    if !is_newer_version(&latest, current) {
+        return false;
+    }
+
+    println!();
+    println!(
+        "AiSH {} is available. You are running {}.",
+        release.tag_name, current
+    );
+    if let Some(name) = release.name.as_deref() {
+        if !name.trim().is_empty() && name.trim() != release.tag_name {
+            println!("release: {name}");
+        }
+    }
+    if let Some(url) = release.html_url.as_deref() {
+        println!("release notes: {url}");
+    }
+
+    if !prompt_yes_no("Install this update now", true) {
+        println!("update deferred; AiSH will ask again after the next daily check.");
+        return false;
+    }
+
+    match install_release(&release.tag_name) {
+        Ok(_) => true,
+        Err(error) => {
+            eprintln!("update failed: {error}");
+            false
+        }
+    }
 }
 
 fn run_update(assume_yes: bool) -> bool {
@@ -57,6 +122,7 @@ fn run_update(assume_yes: bool) -> bool {
             return false;
         }
     };
+    record_update_check();
 
     let current = current_version();
     let latest = normalize_version(&release.tag_name);
@@ -224,15 +290,87 @@ fn extract_archive(asset: &str, archive_path: &Path, extract_dir: &Path) -> Resu
 
 fn start_windows_replace(replacement: &Path, current: &Path) -> Result<(), String> {
     let command = format!(
-        "timeout /t 1 /nobreak > nul && copy /Y \"{}\" \"{}\" > nul",
+        "timeout /t 1 /nobreak > nul && copy /Y \"{}\" \"{}\" > nul && \"{}\" --repair-install --quiet",
         replacement.display(),
+        current.display(),
         current.display()
     );
     Command::new("cmd.exe")
-        .args(["/C", "start", "AiSH Updater", "/MIN", "cmd.exe", "/C", &command])
+        .args([
+            "/D",
+            "/C",
+            "start",
+            "AiSH Updater",
+            "/MIN",
+            "cmd.exe",
+            "/D",
+            "/C",
+            &command,
+        ])
         .spawn()
         .map_err(|error| format!("failed to start Windows replacement process: {error}"))?;
     Ok(())
+}
+
+fn update_check_due() -> bool {
+    let path = update_check_path();
+    let Ok(text) = fs::read_to_string(path) else {
+        return true;
+    };
+    let Ok(last) = text.trim().parse::<u64>() else {
+        return true;
+    };
+    now_unix_secs().saturating_sub(last) >= update_check_interval_secs()
+}
+
+fn record_update_check() {
+    let path = update_check_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, now_unix_secs().to_string());
+}
+
+fn update_check_interval_secs() -> u64 {
+    env::var("AISH_UPDATE_CHECK_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|hours| hours.saturating_mul(60 * 60))
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(UPDATE_CHECK_INTERVAL_SECS)
+}
+
+fn update_check_path() -> PathBuf {
+    if env::consts::OS == "windows" {
+        windows_install_root().join("state").join("last-update-check")
+    } else {
+        env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home_dir().join(".config"))
+            .join("aish")
+            .join("last-update-check")
+    }
+}
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn windows_install_root() -> PathBuf {
+    env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir())
+        .join("AiSH")
+}
+
+fn home_dir() -> PathBuf {
+    env::var("USERPROFILE")
+        .or_else(|_| env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn find_file(root: &Path, filename: &str) -> Option<PathBuf> {
@@ -284,12 +422,22 @@ fn prompt_yes_no(prompt: &str, default_yes: bool) -> bool {
 
 fn sanitize_tag(tag: &str) -> String {
     tag.chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
 fn normalize_version(version: &str) -> String {
-    version.trim().trim_start_matches('v').trim_start_matches('V').to_string()
+    version
+        .trim()
+        .trim_start_matches('v')
+        .trim_start_matches('V')
+        .to_string()
 }
 
 fn is_newer_version(latest: &str, current: &str) -> bool {
