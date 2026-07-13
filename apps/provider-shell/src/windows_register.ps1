@@ -1,6 +1,18 @@
-$ExePath = $args[0]
-$InstallRoot = $args[1]
-$DisplayVersion = $args[2]
+param(
+  [Parameter(Mandatory = $true)]
+  [ValidateNotNullOrEmpty()]
+  [string]$ExePath,
+
+  [Parameter(Mandatory = $true)]
+  [ValidateNotNullOrEmpty()]
+  [string]$InstallRoot,
+
+  [Parameter(Mandatory = $true)]
+  [ValidateNotNullOrEmpty()]
+  [string]$DisplayVersion
+)
+
+$ErrorActionPreference = "Stop"
 $BinDir = Join-Path $InstallRoot "bin"
 $UninstallScript = Join-Path $InstallRoot "uninstall.ps1"
 $StartMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
