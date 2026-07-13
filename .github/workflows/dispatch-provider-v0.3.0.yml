@@ -1,0 +1,29 @@
+name: Dispatch Provider Release v0.3.0
+
+on:
+  push:
+    branches:
+      - release/v0.3.0
+    paths:
+      - .github/workflows/dispatch-provider-v0.3.0.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Dispatch Provider Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh workflow run provider-release.yml \
+            --repo "$GH_REPO" \
+            --ref main \
+            -f version=v0.3.0 \
+            -f make_latest=true \
+            -f prerelease=false
