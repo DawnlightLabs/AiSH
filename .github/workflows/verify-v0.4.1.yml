@@ -67,3 +67,5 @@ jobs:
           git commit -m "Record v0.4.1 release verification"
           git push
           test "$verified" = true
+
+# Retry marker: 2
