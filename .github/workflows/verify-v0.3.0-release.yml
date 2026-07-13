@@ -1,0 +1,85 @@
+name: Verify v0.3.0 Release
+
+on:
+  push:
+    branches:
+      - release/v0.3.0
+    paths:
+      - .github/workflows/verify-v0.3.0-release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: release/v0.3.0
+
+      - name: Wait for complete stable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          expected=(
+            aish-windows-x64.zip
+            aish-windows-x64.zip.sha256
+            aish-windows-arm64.zip
+            aish-windows-arm64.zip.sha256
+            aish-macos-arm64.tar.gz
+            aish-macos-arm64.tar.gz.sha256
+            aish-linux-x64.tar.gz
+            aish-linux-x64.tar.gz.sha256
+            aish-linux-arm64.tar.gz
+            aish-linux-arm64.tar.gz.sha256
+            install
+            install.sh
+            install.ps1
+          )
+
+          data=''
+          missing=()
+          for attempt in $(seq 1 90); do
+            if data=$(gh release view v0.3.0 --repo "$GH_REPO" --json tagName,name,isDraft,isPrerelease,isLatest,publishedAt,assets,body 2>/dev/null); then
+              mapfile -t names < <(jq -r '.assets[].name' <<<"$data")
+              missing=()
+              for asset in "${expected[@]}"; do
+                if ! printf '%s\n' "${names[@]}" | grep -Fxq "$asset"; then
+                  missing+=("$asset")
+                fi
+              done
+              if [[ ${#missing[@]} -eq 0 ]]; then
+                break
+              fi
+            fi
+            sleep 10
+          done
+
+          if [[ -z "$data" ]]; then
+            echo 'release not found' >&2
+            exit 1
+          fi
+
+          mkdir -p docs
+          {
+            echo '{'
+            echo '  "verified": '$( [[ ${#missing[@]} -eq 0 ]] && echo true || echo false )','
+            echo '  "missing": '$(printf '%s\n' "${missing[@]:-}" | jq -R . | jq -s .)','
+            echo '  "release": '$(jq -c . <<<"$data")
+            echo '}'
+          } > docs/release-v0.3.0-status.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/release-v0.3.0-status.json
+          git commit -m "Verify AiSH v0.3.0 release assets" || true
+          git push origin HEAD:release/v0.3.0
+
+          if [[ ${#missing[@]} -ne 0 ]]; then
+            printf 'missing release asset: %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
