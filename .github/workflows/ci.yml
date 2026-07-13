@@ -25,14 +25,18 @@ jobs:
 
   site-build:
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: apps/site
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: apps/site/package-lock.json
       - run: npm ci
-      - run: npm run site:build
+      - run: npm run build
 
   powershell-syntax:
     runs-on: windows-latest
