@@ -21,6 +21,7 @@ $UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AiSH"
 $AppPathKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\aish.exe"
 
 New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null
+Remove-Item -LiteralPath $ShortcutPath -Force -ErrorAction SilentlyContinue
 $shell = New-Object -ComObject WScript.Shell
 try {
   $shortcut = $shell.CreateShortcut($ShortcutPath)
@@ -57,3 +58,10 @@ New-ItemProperty -Path $UninstallKey -Name "URLInfoAbout" -Value "https://aish.d
 New-ItemProperty -Path $UninstallKey -Name "EstimatedSize" -Value $estimatedSize -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $UninstallKey -Name "NoModify" -Value 1 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $UninstallKey -Name "NoRepair" -Value 1 -PropertyType DWord -Force | Out-Null
+
+$iconRefresh = Get-Command "ie4uinit.exe" -ErrorAction SilentlyContinue
+if ($iconRefresh) {
+  try {
+    Start-Process -FilePath $iconRefresh.Source -ArgumentList "-show" -WindowStyle Hidden -Wait
+  } catch {}
+}
