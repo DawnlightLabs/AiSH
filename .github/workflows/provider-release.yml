@@ -9,7 +9,7 @@ on:
       version:
         description: "Release tag/version to publish"
         required: true
-        default: "v0.2.0"
+        default: "v0.2.2"
         type: string
       make_latest:
         description: "Mark this release as latest"
@@ -41,7 +41,9 @@ jobs:
     name: prepare-release
     runs-on: ubuntu-22.04
     steps:
-      - name: Ensure GitHub release exists
+      - uses: actions/checkout@v5
+
+      - name: Create or update GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,12 +51,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists."
-            exit 0
-          fi
+          notes_file="docs/releases/$RELEASE_TAG.md"
+          release_flags=(--title "AiSH $RELEASE_TAG" --repo "$GH_REPO")
 
-          release_flags=(--title "AiSH $RELEASE_TAG" --generate-notes --repo "$GH_REPO")
+          if [[ -f "$notes_file" ]]; then
+            release_flags+=(--notes-file "$notes_file")
+          else
+            release_flags+=(--generate-notes)
+          fi
 
           if [[ "$PRERELEASE" == "true" ]]; then
             release_flags+=(--prerelease)
@@ -66,7 +70,22 @@ jobs:
             release_flags+=(--latest=false)
           fi
 
-          gh release create "$RELEASE_TAG" "${release_flags[@]}"
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refreshing its metadata."
+            edit_flags=(--title "AiSH $RELEASE_TAG" --repo "$GH_REPO")
+            if [[ -f "$notes_file" ]]; then
+              edit_flags+=(--notes-file "$notes_file")
+            fi
+            if [[ "$MAKE_LATEST" == "true" ]]; then
+              edit_flags+=(--latest)
+            fi
+            if [[ "$PRERELEASE" == "true" ]]; then
+              edit_flags+=(--prerelease)
+            fi
+            gh release edit "$RELEASE_TAG" "${edit_flags[@]}"
+          else
+            gh release create "$RELEASE_TAG" "${release_flags[@]}"
+          fi
 
   build:
     name: build-${{ matrix.name }}
