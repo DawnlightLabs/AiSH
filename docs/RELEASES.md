@@ -46,10 +46,12 @@ aish --update --yes
 
 ### Windows
 
-- MSI or setup bundle.
-- Provider shell executable.
+- PowerShell installer and provider shell executable.
+- Start menu shortcut and user-level App Paths registration.
+- Installed apps entry with publisher, version, icon, and uninstall command.
 - PATH/profile setup behavior tested.
 - Windows Terminal and VS Code-compatible profile behavior tested when relevant.
+- MSI or setup bundle when implemented.
 
 ### macOS
 
@@ -68,6 +70,8 @@ aish --update --yes
 
 ## Release notes
 
+Add curated notes at `docs/releases/vVERSION.md` before publishing. `Provider Release` uses that file as the GitHub release body. The downloads page reads the same body from the GitHub Releases API and displays it as the public changelog.
+
 Include:
 
 - Summary of user-facing changes.
@@ -80,6 +84,8 @@ Include:
 
 - Verify download links.
 - Verify install scripts point to the intended version.
-- Smoke test a clean install.
+- Smoke test a clean Windows install and confirm AiSH appears in Start menu search and Installed apps.
+- Test uninstall from Windows Settings and confirm PATH and app registration are removed.
 - Run `/update` from an older installed build and confirm it detects the new release.
+- Confirm the downloads-page changelog matches the curated release notes.
 - Update docs if artifact names or install commands changed.
