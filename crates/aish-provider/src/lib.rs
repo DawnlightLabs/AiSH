@@ -1,4 +1,7 @@
-use aish_ai::{build_command_card_prompt, run_gguf_model, ModelProfile, ModelRunRequest};
+use aish_ai::{
+    build_command_card_prompt, build_command_card_system_prompt, run_gguf_model, ModelProfile,
+    ModelRunRequest,
+};
 use aish_core::{AiSubmode, AppMode, CachePolicy, ContextLevel, RiskLevel};
 use aish_safety::classify_risk;
 use serde::{Deserialize, Serialize};
@@ -302,8 +305,13 @@ fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
         };
     };
 
+    let system_prompt = build_command_card_system_prompt();
     let prompt = build_command_card_prompt(input, &request.context_json);
-    let result = run_gguf_model(ModelRunRequest { profile, prompt });
+    let result = run_gguf_model(ModelRunRequest {
+        profile,
+        system_prompt,
+        prompt,
+    });
     let Ok(result) = result else {
         let error = result
             .err()
@@ -339,7 +347,7 @@ fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
             fallback_message: None,
             model_output: Some(body),
             runtime: Some(runtime),
-            error: Some("could not parse command card".to_string()),
+            error: Some("the constrained model response was not a command card".to_string()),
         };
     };
 

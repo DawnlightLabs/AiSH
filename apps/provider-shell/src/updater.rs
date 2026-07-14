@@ -342,7 +342,9 @@ fn update_check_interval_secs() -> u64 {
 
 fn update_check_path() -> PathBuf {
     if env::consts::OS == "windows" {
-        windows_install_root().join("state").join("last-update-check")
+        windows_install_root()
+            .join("state")
+            .join("last-update-check")
     } else {
         env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)

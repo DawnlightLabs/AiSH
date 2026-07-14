@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+mod structured_output;
+use structured_output::{
+    detect_structured_output_mode, StructuredOutputMode, COMMAND_CARD_GBNF,
+    COMMAND_CARD_JSON_SCHEMA,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiRequest {
     pub intent: String,
@@ -49,6 +55,7 @@ impl Default for ModelProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelRunRequest {
     pub profile: ModelProfile,
+    pub system_prompt: String,
     pub prompt: String,
 }
 
@@ -107,25 +114,31 @@ fn shell_family(os: &str, shell: &str) -> &'static str {
     }
 }
 
+pub fn build_command_card_system_prompt() -> String {
+    "You are AiSH's local shell planner. Produce one command card for the user's current shell. Use only the supplied operating system, shell, current context, and user intent. The command must be directly runnable in that shell and must not invent paths, filenames, usernames, installed tools, or facts. Use fallback_message only when no useful command can be produced. Read-only work is low risk; state-changing work is medium or high risk. The host independently validates risk and approval. Keep the reason brief.".to_string()
+}
+
 pub fn build_command_card_prompt(intent: &str, context_json: &serde_json::Value) -> String {
     let os = target_os();
     let shell = target_shell();
     let family = shell_family(&os, &shell);
     let context = serde_json::to_string_pretty(context_json).unwrap_or_else(|_| "{}".to_string());
-
-    let command_contract = match family {
-        "powershell" => "Return one Windows PowerShell-compatible command. Use PowerShell cmdlets and syntax only. Use Set-Location for changing folders. Use Get-ChildItem for listing/searching. Use Remove-Item -LiteralPath <path> -Recurse -Force for folder deletion. Do not use cmd.exe commands such as del/rmdir/copy/xcopy, and do not use cmd.exe chaining. Use semicolon-separated PowerShell statements when chaining is necessary. Never use && for Windows PowerShell compatibility.",
-        "fish" => "Return one fish-compatible shell command. Use POSIX-style filesystem paths where possible, but avoid bash-only syntax when fish syntax differs. Use $HOME for user-profile folders.",
-        _ => "Return one POSIX shell command suitable for bash/zsh. Use $HOME for user-profile folders. Use find/ls/grep/sed/awk/git/npm style commands where appropriate.",
-    };
-
-    let path_rules = match family {
-        "powershell" => "Path rules for PowerShell: if no path is named, omit -Path and rely on the live shell current location. If the user names Downloads/Desktop/Documents, build it with Join-Path $env:USERPROFILE '<FolderName>'. If the user provides an absolute path such as D:\\, C:\\work, /tmp, or ~/work, use that path directly; never prefix it with $env:USERPROFILE or $HOME. Never produce paths like $env:USERPROFILE\\D:\\. Use -LiteralPath for exact paths. Use -Filter only for filename patterns, not for folder names. Use -File only when files specifically are requested. Use Select-Object -ExpandProperty FullName only when exact paths or locations are requested.",
-        _ => "Path rules for POSIX shells: if no path is named, use . or omit the path and rely on the live shell current location. If the user names Downloads/Desktop/Documents, build it from $HOME. If the user provides an absolute path such as /tmp or /Volumes/Data, use it directly. Use find -name only when searching for an unknown item by name. Use file-only predicates only when files specifically are requested. Print full paths only when exact paths or locations are requested.",
+    let dialect = match family {
+        "powershell" => "Use Windows PowerShell syntax.",
+        "fish" => "Use fish shell syntax.",
+        _ => "Use POSIX syntax suitable for bash or zsh.",
     };
 
     format!(
-        "You are Ken, the AiSH command planner.\nReturn exactly one JSON object and nothing else. No markdown. No prose. No thinking text.\nUse keys: action_type, command, risk, reason. For fallback use action_type, fallback_message, reason.\nThe command must be a single runnable command for this environment.\n\nEnvironment:\n- OS: {os}\n- Shell: {shell}\n- Shell family: {family}\n- Context JSON: {context}\n\nCommand contract:\n- {command_contract}\n- The command runs in the user's existing live shell session.\n- Do not invent the current directory. Use the current directory from context when available.\n- Never output placeholder usernames, tutorial paths, angle-bracket placeholders, or sample targets not present in the user request.\n- If a user-profile folder is named, build it from the shell's home environment variable.\n- If the user says go to, cd to, change to, or open a folder in the shell, return a directory-change command, not a literal phrase.\n- If the user asks to delete/remove a file or folder, return the correct destructive command and mark risk high. The app or provider shell will request approval.\n\nPath and output rules:\n- {path_rules}\n- Do not copy filenames, folder names, or examples that are not in the user request.\n\nRisk rules:\n- Read-only inspection, recursive listing, sorting, filtering, text search, status checks, version checks, and path searches are low risk even if long-running.\n- Commands that delete, overwrite, move, rename, install, uninstall, publish, deploy, push, mutate git history, change permissions, edit registry, stop services/processes, or alter cloud/system state are medium or high risk.\n- For medium/high risk, still return the best command card. The app or provider shell will request approval.\n\nQuality rules:\n- Keep the command complete and directly runnable.\n- Keep the reason short and factual.\n\nUser request:\n{intent}\n"
+        "Operating system: {os}
+Shell: {shell}
+Shell family: {family}
+Shell constraint: {dialect}
+Context JSON:
+{context}
+
+User intent:
+{intent}"
     )
 }
 
@@ -149,31 +162,52 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
         ));
     }
 
+    let structured_output = detect_structured_output_mode(&request.profile.llama_cli_path)?;
     let mut command = Command::new(&request.profile.llama_cli_path);
     command
         .stdin(Stdio::null())
         .arg("-m")
         .arg(&request.profile.model_path)
+        .arg("--system-prompt")
+        .arg(&request.system_prompt)
         .arg("-p")
         .arg(&request.prompt)
         .arg("-n")
         .arg(request.profile.max_tokens.to_string())
         .arg("--temp")
-        .arg(request.profile.temperature.to_string())
+        .arg("0")
+        .arg("--top-k")
+        .arg("1")
+        .arg("--seed")
+        .arg("0")
         .arg("-c")
         .arg(request.profile.context_tokens.to_string())
-        .arg("--no-display-prompt")
+        .arg("--conversation")
         .arg("--single-turn")
+        .arg("--no-display-prompt")
         .arg("--reasoning")
         .arg("off");
 
+    match structured_output {
+        StructuredOutputMode::JsonSchema => {
+            command.arg("--json-schema").arg(COMMAND_CARD_JSON_SCHEMA);
+        }
+        StructuredOutputMode::Grammar => {
+            command.arg("--grammar").arg(COMMAND_CARD_GBNF);
+        }
+    }
+
+    let constraint = match structured_output {
+        StructuredOutputMode::JsonSchema => "--json-schema <command-card-schema>",
+        StructuredOutputMode::Grammar => "--grammar <command-card-grammar>",
+    };
     let command_line = format!(
-        "{} -m {} -p <prompt> -n {} --temp {} -c {} --no-display-prompt --single-turn --reasoning off",
+        "{} -m {} --system-prompt <system> -p <prompt> -n {} --temp 0 --top-k 1 --seed 0 -c {} --conversation --single-turn --no-display-prompt --reasoning off {}",
         request.profile.llama_cli_path,
         request.profile.model_path,
         request.profile.max_tokens,
-        request.profile.temperature,
-        request.profile.context_tokens
+        request.profile.context_tokens,
+        constraint
     );
 
     let output = command
