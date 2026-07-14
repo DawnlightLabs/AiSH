@@ -1,4 +1,5 @@
 mod lifecycle;
+mod windows_apply;
 
 use std::env;
 use std::fs::{self, File};
@@ -29,6 +30,10 @@ pub fn print_version() {
 pub fn handle_update_args() -> bool {
     let args = env::args().collect::<Vec<_>>();
 
+    if windows_apply::handle_apply_args(&args, current_version()) {
+        return true;
+    }
+
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         print_version();
         return true;
@@ -37,6 +42,15 @@ pub fn handle_update_args() -> bool {
     if lifecycle::handle_args(&args, current_version()) {
         return true;
     }
+
+    if let Some(version) = windows_apply::active_pending_update() {
+        println!(
+            "AiSH update to {version} is still being applied. Close this window and reopen AiSH in a few seconds."
+        );
+        return true;
+    }
+
+    windows_apply::show_result_once();
 
     if args.iter().any(|arg| arg == "--update") {
         let assume_yes = args.iter().any(|arg| arg == "--yes" || arg == "-y");
@@ -215,7 +229,7 @@ fn install_release(tag: &str) -> Result<bool, String> {
     if env::consts::OS == "windows" {
         let replacement = work_dir.join("aish-update.exe");
         fs::copy(&downloaded, &replacement).map_err(|error| error.to_string())?;
-        start_windows_replace(&replacement, &current)?;
+        windows_apply::start_windows_replace(&replacement, &current, &normalize_version(tag))?;
         println!("AiSH update prepared. This shell will exit so Windows can replace aish.exe.");
         return Ok(true);
     }
@@ -285,30 +299,6 @@ fn extract_archive(asset: &str, archive_path: &Path, extract_dir: &Path) -> Resu
     if !status.success() {
         return Err(format!("failed to extract {asset}"));
     }
-    Ok(())
-}
-
-fn start_windows_replace(replacement: &Path, current: &Path) -> Result<(), String> {
-    let command = format!(
-        "timeout /t 1 /nobreak > nul && copy /Y \"{}\" \"{}\" > nul && \"{}\" --repair-install --quiet",
-        replacement.display(),
-        current.display(),
-        current.display()
-    );
-    Command::new("cmd.exe")
-        .args([
-            "/D",
-            "/C",
-            "start",
-            "AiSH Updater",
-            "/MIN",
-            "cmd.exe",
-            "/D",
-            "/C",
-            &command,
-        ])
-        .spawn()
-        .map_err(|error| format!("failed to start Windows replacement process: {error}"))?;
     Ok(())
 }
 

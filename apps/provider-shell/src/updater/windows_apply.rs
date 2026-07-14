@@ -62,7 +62,9 @@ pub(super) fn start_windows_replace(
 
     if let Err(error) = command.spawn() {
         clear_pending_update();
-        return Err(format!("failed to start Windows replacement helper: {error}"));
+        return Err(format!(
+            "failed to start Windows replacement helper: {error}"
+        ));
     }
 
     Ok(())
