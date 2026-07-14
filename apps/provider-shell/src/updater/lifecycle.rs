@@ -66,8 +66,7 @@ fn repair_windows_app_registration(version: &str, quiet: bool) -> Result<(), Str
     fs::write(&uninstaller, WINDOWS_UNINSTALLER).map_err(|error| error.to_string())?;
 
     let registration_script = install_root.join("register.ps1");
-    fs::write(&registration_script, WINDOWS_REGISTER_SCRIPT)
-        .map_err(|error| error.to_string())?;
+    fs::write(&registration_script, WINDOWS_REGISTER_SCRIPT).map_err(|error| error.to_string())?;
 
     let registration_text = registration_script.display().to_string();
     let exe = current.display().to_string();

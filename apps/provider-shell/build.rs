@@ -3,9 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let manifest_dir = PathBuf::from(
-        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not available"),
-    );
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not available"));
     let source_png = manifest_dir
         .join("../..")
         .join("assets/png/aish-app-icon-dark-256x256.png");

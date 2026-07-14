@@ -224,7 +224,11 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             }
             _ => println!(
                 "full working trace: {}",
-                if state.session.show_trace { "on" } else { "off" }
+                if state.session.show_trace {
+                    "on"
+                } else {
+                    "off"
+                }
             ),
         },
         "/approve" => approve_pending(state),
@@ -255,7 +259,10 @@ fn print_status(state: &ProviderState) {
         "command_log_policy: {}",
         logging::describe_policy(&settings.command_log_policy)
     );
-    println!("command_log_path: {}", logging::command_log_path().display());
+    println!(
+        "command_log_path: {}",
+        logging::command_log_path().display()
+    );
     println!(
         "crash_log_sharing_opt_in: {}",
         settings.crash_log_sharing_opt_in
@@ -273,7 +280,11 @@ fn approve_pending(state: &mut ProviderState) {
             if ok { "success" } else { "failed" },
             Some(&pending.risk),
             Some(&pending.reason),
-            if ok { None } else { Some("command exited unsuccessfully") },
+            if ok {
+                None
+            } else {
+                Some("command exited unsuccessfully")
+            },
         );
         state.session.record_command(
             pending.intent.as_deref(),
@@ -420,7 +431,11 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 if ok { "success" } else { "failed" },
                 Some(risk_label(&plan.risk)),
                 Some(&plan.reason),
-                if ok { None } else { Some("command exited unsuccessfully") },
+                if ok {
+                    None
+                } else {
+                    Some("command exited unsuccessfully")
+                },
             );
             state.session.record_command(
                 Some(&plan.intent),
@@ -460,7 +475,11 @@ fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
         if ok { "success" } else { "failed" },
         Some("user"),
         Some("User-entered command."),
-        if ok { None } else { Some("command exited unsuccessfully") },
+        if ok {
+            None
+        } else {
+            Some("command exited unsuccessfully")
+        },
     );
     state.session.record_command(
         None,
@@ -565,10 +584,36 @@ fn looks_like_direct_command(input: &str) -> bool {
         .unwrap_or_default()
         .to_lowercase();
     let direct = [
-        "cd", "dir", "ls", "pwd", "cat", "type", "echo", "clear", "cls", "git", "npm",
-        "pnpm", "yarn", "bun", "node", "python", "pip", "cargo", "go", "docker",
-        "kubectl", "where", "which", "grep", "find", "mkdir", "touch", "get-childitem",
-        "get-location", "select-string",
+        "cd",
+        "dir",
+        "ls",
+        "pwd",
+        "cat",
+        "type",
+        "echo",
+        "clear",
+        "cls",
+        "git",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bun",
+        "node",
+        "python",
+        "pip",
+        "cargo",
+        "go",
+        "docker",
+        "kubectl",
+        "where",
+        "which",
+        "grep",
+        "find",
+        "mkdir",
+        "touch",
+        "get-childitem",
+        "get-location",
+        "select-string",
     ];
     direct.contains(&first.as_str()) || input.contains('|') || input.contains("&&")
 }

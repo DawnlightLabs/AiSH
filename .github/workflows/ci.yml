@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check --workspace
+      - run: cargo test -p aish-ai -p aish-provider
 
   windows-lifecycle-smoke:
     runs-on: windows-latest
@@ -40,6 +41,34 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Staged provider setup failed.' }
           if (-not (Test-Path -LiteralPath (Join-Path $stagedRoot 'bin\aish.exe'))) {
             throw 'Staged provider setup did not create the managed executable.'
+          }
+      - name: Verify Windows user environment persistence
+        shell: pwsh
+        run: |
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $stagedRoot = Join-Path $env:RUNNER_TEMP 'AiSH environment smoke with spaces'
+          $oldUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $oldModelPath = [Environment]::GetEnvironmentVariable('AISH_MODEL_PATH', 'User')
+          try {
+            [Environment]::SetEnvironmentVariable('Path', 'C:\Program Files\Node Test', 'User')
+            [Environment]::SetEnvironmentVariable('AISH_MODEL_PATH', $null, 'User')
+            & $builtExe --install-headless --install-dir $stagedRoot --skip-model --add-path --set-model-path --no-windows-terminal --no-editor-profiles
+            if ($LASTEXITCODE -ne 0) { throw 'Environment persistence setup failed.' }
+            $savedPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            $expectedBin = Join-Path $stagedRoot 'bin'
+            if (($savedPath -split ';') -notcontains $expectedBin) {
+              throw 'AiSH bin directory was not added to the user PATH.'
+            }
+            if ($savedPath -notmatch [regex]::Escape('C:\Program Files\Node Test')) {
+              throw 'Existing user PATH entries containing spaces were not preserved.'
+            }
+            $savedModel = [Environment]::GetEnvironmentVariable('AISH_MODEL_PATH', 'User')
+            if ([string]::IsNullOrWhiteSpace($savedModel)) {
+              throw 'AISH_MODEL_PATH was not persisted.'
+            }
+          } finally {
+            [Environment]::SetEnvironmentVariable('Path', $oldUserPath, 'User')
+            [Environment]::SetEnvironmentVariable('AISH_MODEL_PATH', $oldModelPath, 'User')
           }
       - name: Verify embedded Windows icon resource
         shell: pwsh

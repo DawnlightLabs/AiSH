@@ -353,7 +353,7 @@ fn is_valid_gguf(path: &Path) -> bool {
 fn add_provider_to_path(bin_dir: &Path) -> Result<(), String> {
     if cfg!(target_os = "windows") {
         let bin = bin_dir.display().to_string();
-        let current = env::var("PATH").unwrap_or_default();
+        let current = get_windows_user_env("Path")?;
         if current
             .split(';')
             .any(|entry| entry.trim_matches('"').eq_ignore_ascii_case(&bin))
@@ -385,19 +385,38 @@ fn add_provider_to_path(bin_dir: &Path) -> Result<(), String> {
     }
 }
 
-fn set_windows_user_env(name: &str, value: &str) -> Result<(), String> {
-    let script = format!(
-        "[Environment]::SetEnvironmentVariable('{}', $args[0], 'User')",
-        name.replace("'", "''")
-    );
-    let status = Command::new("powershell")
+fn get_windows_user_env(name: &str) -> Result<String, String> {
+    let output = Command::new("powershell")
+        .env("AISH_ENV_NAME", name)
         .args([
+            "-NoLogo",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            &script,
-            value,
+            "[Environment]::GetEnvironmentVariable($env:AISH_ENV_NAME, 'User')",
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!("failed to read user environment variable {name}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn set_windows_user_env(name: &str, value: &str) -> Result<(), String> {
+    let status = Command::new("powershell")
+        .env("AISH_ENV_NAME", name)
+        .env("AISH_ENV_VALUE", value)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "[Environment]::SetEnvironmentVariable($env:AISH_ENV_NAME, $env:AISH_ENV_VALUE, 'User')",
         ])
         .status()
         .map_err(|error| error.to_string())?;
