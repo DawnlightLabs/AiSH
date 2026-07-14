@@ -18,6 +18,16 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+      - name: Keep workflow changes out of generated commit
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply-v042.py')
+          text = path.read_text()
+          start = text.index('ci = subprocess.check_output(')
+          end = text.index('Path(__file__).unlink()', start)
+          path.write_text(text[:start] + text[end:])
+          PY
       - name: Apply and test v0.4.2 implementation
         run: python3 tools/apply-v042.py
       - name: Commit implementation
