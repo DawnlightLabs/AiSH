@@ -4,37 +4,241 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-v042:
-    if: github.head_ref == 'fix/constrained-command-cards-v042'
-    runs-on: ubuntu-22.04
+  cargo-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Keep workflow changes out of generated commit
+      - run: cargo check --workspace
+      - run: cargo test -p aish-ai -p aish-provider
+
+  windows-lifecycle-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build provider shell
+        run: cargo build -p aish-provider-shell
+      - name: Verify staged installer copy
+        shell: pwsh
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('tools/apply-v042.py')
-          text = path.read_text()
-          start = text.index('ci = subprocess.check_output(')
-          end = text.index('Path(__file__).unlink()', start)
-          path.write_text(text[:start] + text[end:])
-          PY
-      - name: Apply and test v0.4.2 implementation
-        run: python3 tools/apply-v042.py
-      - name: Commit implementation
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $stagedRoot = Join-Path $env:RUNNER_TEMP 'AiSH staged install'
+          Remove-Item -LiteralPath $stagedRoot -Recurse -Force -ErrorAction SilentlyContinue
+          & $builtExe --install-headless --install-dir $stagedRoot --skip-model --no-add-path --no-set-model-path --no-windows-terminal --no-editor-profiles
+          if ($LASTEXITCODE -ne 0) { throw 'Staged provider setup failed.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $stagedRoot 'bin\aish.exe'))) {
+            throw 'Staged provider setup did not create the managed executable.'
+          }
+      - name: Verify Windows user environment persistence
+        shell: pwsh
         run: |
-          set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          git commit -m "Constrain local command card generation"
-          git push origin HEAD:${{ github.head_ref }}
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $stagedRoot = Join-Path $env:RUNNER_TEMP 'AiSH environment smoke with spaces'
+          $oldUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $oldModelPath = [Environment]::GetEnvironmentVariable('AISH_MODEL_PATH', 'User')
+          try {
+            [Environment]::SetEnvironmentVariable('Path', 'C:\Program Files\Node Test', 'User')
+            [Environment]::SetEnvironmentVariable('AISH_MODEL_PATH', $null, 'User')
+            & $builtExe --install-headless --install-dir $stagedRoot --skip-model --add-path --set-model-path --no-windows-terminal --no-editor-profiles
+            if ($LASTEXITCODE -ne 0) { throw 'Environment persistence setup failed.' }
+            $savedPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            $expectedBin = Join-Path $stagedRoot 'bin'
+            if (($savedPath -split ';') -notcontains $expectedBin) {
+              throw 'AiSH bin directory was not added to the user PATH.'
+            }
+            if ($savedPath -notmatch [regex]::Escape('C:\Program Files\Node Test')) {
+              throw 'Existing user PATH entries containing spaces were not preserved.'
+            }
+            $savedModel = [Environment]::GetEnvironmentVariable('AISH_MODEL_PATH', 'User')
+            if ([string]::IsNullOrWhiteSpace($savedModel)) {
+              throw 'AISH_MODEL_PATH was not persisted.'
+            }
+          } finally {
+            [Environment]::SetEnvironmentVariable('Path', $oldUserPath, 'User')
+            [Environment]::SetEnvironmentVariable('AISH_MODEL_PATH', $oldModelPath, 'User')
+          }
+      - name: Verify embedded Windows icon resource
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class AiSHResourceCheck {
+              public delegate bool EnumResourceNameProc(
+                  IntPtr module,
+                  IntPtr type,
+                  IntPtr name,
+                  IntPtr parameter
+              );
+
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr LoadLibraryEx(
+                  string fileName,
+                  IntPtr file,
+                  uint flags
+              );
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool EnumResourceNames(
+                  IntPtr module,
+                  IntPtr type,
+                  EnumResourceNameProc callback,
+                  IntPtr parameter
+              );
+
+              [DllImport("kernel32.dll")]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+
+          $module = [AiSHResourceCheck]::LoadLibraryEx($exe, [IntPtr]::Zero, 0x2)
+          if ($module -eq [IntPtr]::Zero) {
+            throw 'Could not open aish.exe as a Windows resource image.'
+          }
+
+          try {
+            $script:foundIcon = $false
+            $callback = [AiSHResourceCheck+EnumResourceNameProc]{
+              param($moduleHandle, $resourceType, $resourceName, $parameter)
+              $script:foundIcon = $true
+              return $true
+            }
+            [AiSHResourceCheck]::EnumResourceNames(
+              $module,
+              [IntPtr]14,
+              $callback,
+              [IntPtr]::Zero
+            ) | Out-Null
+            if (-not $script:foundIcon) {
+              throw 'aish.exe does not contain an RT_GROUP_ICON resource.'
+            }
+          } finally {
+            [AiSHResourceCheck]::FreeLibrary($module) | Out-Null
+          }
+      - name: Verify updater archive argument transport
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'AiSH updater smoke with spaces'
+          $source = Join-Path $root 'source'
+          $archive = Join-Path $root 'aish test.zip'
+          $extract = Join-Path $root 'extract target'
+          New-Item -ItemType Directory -Force -Path $source, $extract | Out-Null
+          Set-Content -LiteralPath (Join-Path $source 'aish.exe') -Value 'smoke'
+          Compress-Archive -LiteralPath (Join-Path $source 'aish.exe') -DestinationPath $archive -Force
+          $env:AISH_UPDATE_ARCHIVE = $archive
+          $env:AISH_UPDATE_EXTRACT_DIR = $extract
+          powershell.exe -NoLogo -NoProfile -Command 'Expand-Archive -LiteralPath $env:AISH_UPDATE_ARCHIVE -DestinationPath $env:AISH_UPDATE_EXTRACT_DIR -Force'
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $extract 'aish.exe'))) {
+            throw 'Windows updater extraction smoke test failed.'
+          }
+      - name: Verify Windows branding and terminal settings repair
+        shell: pwsh
+        run: |
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $installRoot = Join-Path $env:LOCALAPPDATA 'AiSH'
+          $managedExe = Join-Path $installRoot 'bin\aish.exe'
+          New-Item -ItemType Directory -Force -Path (Split-Path $managedExe) | Out-Null
+          Copy-Item -LiteralPath $builtExe -Destination $managedExe -Force
+
+          $terminalSettings = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\settings.json'
+          New-Item -ItemType Directory -Force -Path (Split-Path $terminalSettings) | Out-Null
+          [System.IO.File]::WriteAllBytes($terminalSettings, [byte[]](0xEF, 0xBB, 0xBF))
+
+          $previewSettings = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json'
+          New-Item -ItemType Directory -Force -Path (Split-Path $previewSettings) | Out-Null
+          Set-Content -LiteralPath $previewSettings -Value '{broken-json' -NoNewline
+
+          & $managedExe --repair-install --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Registration repair failed.' }
+          if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AiSH')) {
+            throw 'Installed apps registration was not created.'
+          }
+
+          foreach ($settingsPath in @($terminalSettings, $previewSettings)) {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            $profile = $settings.profiles.list | Where-Object { $_.name -eq 'AiSH' } | Select-Object -First 1
+            if (-not $profile) { throw "Windows Terminal AiSH profile was not created in $settingsPath." }
+            if (-not $profile.icon -or -not (Test-Path -LiteralPath $profile.icon)) {
+              throw "Windows Terminal AiSH profile does not reference the installed logo in $settingsPath."
+            }
+          }
+          if (-not (Test-Path -LiteralPath "$previewSettings.aish-backup")) {
+            throw 'Malformed Windows Terminal settings were not backed up.'
+          }
+
+          $model = Join-Path $env:RUNNER_TEMP 'aish-ci-model.gguf'
+          $stream = [System.IO.File]::Open($model, [System.IO.FileMode]::Create)
+          try {
+            $stream.SetLength(16MB)
+            $magic = [System.Text.Encoding]::ASCII.GetBytes('GGUF')
+            $stream.Position = 0
+            $stream.Write($magic, 0, $magic.Length)
+          } finally {
+            $stream.Dispose()
+          }
+          $env:AISH_MODEL_PATH = $model
+          $env:AISH_SKIP_UPDATE_CHECK = '1'
+          $output = "/exit" | & $managedExe 2>&1 | Out-String
+          if ($output -match 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\AiSH') {
+            throw 'AiSH leaked the registry probe into terminal startup output.'
+          }
+          if ($output -notmatch 'AiSH provider shell') {
+            throw 'AiSH provider shell did not start successfully.'
+          }
+
+          & $managedExe --uninstall --yes
+          if ($LASTEXITCODE -ne 0) { throw 'Uninstall smoke test failed.' }
+
+  site-build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: apps/site
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+
+  powershell-syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $files = @(
+            'apps/site/public/install.ps1',
+            'apps/provider-shell/src/windows_register.ps1',
+            'apps/provider-shell/src/windows_uninstall.ps1'
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
