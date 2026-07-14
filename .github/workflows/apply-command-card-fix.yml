@@ -1,0 +1,331 @@
+name: Bootstrap constrained command cards
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-command-card-fix.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Create implementation branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -b fix/constrained-command-cards
+      - name: Implement schema-constrained generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > crates/aish-ai/src/structured_output.rs <<'RUST'
+          use std::process::Command;
+
+          pub(crate) const COMMAND_CARD_JSON_SCHEMA: &str = r#"{
+            "type": "object",
+            "properties": {
+              "action_type": { "type": "string", "enum": ["shell_command", "fallback_message"] },
+              "command": { "type": "string" },
+              "risk": { "type": "string", "enum": ["low", "medium", "high"] },
+              "reason": { "type": "string" },
+              "fallback_message": { "type": "string" }
+            },
+            "required": ["action_type", "command", "risk", "reason", "fallback_message"],
+            "additionalProperties": false
+          }"#;
+
+          pub(crate) const COMMAND_CARD_GBNF: &str = r#"
+          root ::= "{" ws action-kv "," ws command-kv "," ws risk-kv "," ws reason-kv "," ws fallback-kv "}" ws
+          action-kv ::= "\"action_type\"" ws ":" ws ("\"shell_command\"" | "\"fallback_message\"")
+          command-kv ::= "\"command\"" ws ":" ws string
+          risk-kv ::= "\"risk\"" ws ":" ws ("\"low\"" | "\"medium\"" | "\"high\"")
+          reason-kv ::= "\"reason\"" ws ":" ws string
+          fallback-kv ::= "\"fallback_message\"" ws ":" ws string
+          string ::= "\"" char* "\""
+          char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+          hex ::= [0-9a-fA-F]
+          ws ::= [ \t\n\r]*
+          "#;
+
+          #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+          pub(crate) enum StructuredOutputMode {
+              JsonSchema,
+              Grammar,
+          }
+
+          pub(crate) fn detect_structured_output_mode(
+              llama_cli_path: &str,
+          ) -> Result<StructuredOutputMode, String> {
+              let output = Command::new(llama_cli_path)
+                  .arg("--help")
+                  .output()
+                  .map_err(|error| format!("Failed to inspect llama-cli capabilities: {error}"))?;
+              let help = format!(
+                  "{}\n{}",
+                  String::from_utf8_lossy(&output.stdout),
+                  String::from_utf8_lossy(&output.stderr)
+              );
+
+              if help.contains("--json-schema") {
+                  Ok(StructuredOutputMode::JsonSchema)
+              } else if help.contains("--grammar") {
+                  Ok(StructuredOutputMode::Grammar)
+              } else {
+                  Err("The installed llama-cli does not support JSON Schema or grammar-constrained output. Update llama.cpp and run setup again.".to_string())
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::{COMMAND_CARD_GBNF, COMMAND_CARD_JSON_SCHEMA};
+
+              #[test]
+              fn command_card_schema_is_valid_json() {
+                  let schema: serde_json::Value =
+                      serde_json::from_str(COMMAND_CARD_JSON_SCHEMA).expect("valid JSON schema");
+                  assert_eq!(schema["additionalProperties"], false);
+                  assert_eq!(schema["required"].as_array().map(Vec::len), Some(5));
+              }
+
+              #[test]
+              fn grammar_matches_the_schema_contract() {
+                  for field in [
+                      "action_type",
+                      "command",
+                      "risk",
+                      "reason",
+                      "fallback_message",
+                  ] {
+                      assert!(COMMAND_CARD_GBNF.contains(field));
+                  }
+              }
+          }
+          RUST
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          ai = Path('crates/aish-ai/src/lib.rs')
+          text = ai.read_text()
+          text = text.replace(
+              'use std::process::{Command, Stdio};\n',
+              'use std::process::{Command, Stdio};\n\nmod structured_output;\nuse structured_output::{\n    detect_structured_output_mode, StructuredOutputMode, COMMAND_CARD_GBNF,\n    COMMAND_CARD_JSON_SCHEMA,\n};\n',
+              1,
+          )
+          text = text.replace(
+              'pub struct ModelRunRequest {\n    pub profile: ModelProfile,\n    pub prompt: String,\n}',
+              'pub struct ModelRunRequest {\n    pub profile: ModelProfile,\n    pub system_prompt: String,\n    pub prompt: String,\n}',
+              1,
+          )
+          start = text.index('pub fn build_command_card_prompt(')
+          end = text.index('\npub fn run_gguf_model', start)
+          text = text[:start] + '''pub fn build_command_card_system_prompt() -> String {
+              "You are AiSH's local shell planner. Produce one command card for the user's current shell. Use the supplied environment and current working directory. Never invent paths, filenames, usernames, or installed tools. The command field must contain one directly runnable command for the stated shell; leave it empty only when action_type is fallback_message. Use fallback_message only when no useful command can be produced. Classify read-only work as low risk and mutating work as medium or high risk. The host independently enforces safety and approval. Keep the reason concise.".to_string()
+          }
+
+          pub fn build_command_card_prompt(intent: &str, context_json: &serde_json::Value) -> String {
+              let os = target_os();
+              let shell = target_shell();
+              let family = shell_family(&os, &shell);
+              let context = serde_json::to_string_pretty(context_json).unwrap_or_else(|_| "{}".to_string());
+              let dialect = match family {
+                  "powershell" => "Use Windows PowerShell syntax, not cmd.exe or POSIX syntax.",
+                  "fish" => "Use fish shell syntax.",
+                  _ => "Use POSIX syntax suitable for bash or zsh.",
+              };
+
+              format!(
+                  "Environment:\n- OS: {os}\n- Shell: {shell}\n- Shell family: {family}\n- Context: {context}\n\nShell constraint:\n{dialect}\n\nUser request:\n{intent}"
+              )
+          }
+          ''' + text[end:]
+
+          old = '''    let mut command = Command::new(&request.profile.llama_cli_path);
+              command
+                  .stdin(Stdio::null())
+                  .arg("-m")
+                  .arg(&request.profile.model_path)
+                  .arg("-p")
+                  .arg(&request.prompt)
+                  .arg("-n")
+                  .arg(request.profile.max_tokens.to_string())
+                  .arg("--temp")
+                  .arg(request.profile.temperature.to_string())
+                  .arg("-c")
+                  .arg(request.profile.context_tokens.to_string())
+                  .arg("--no-display-prompt")
+                  .arg("--single-turn")
+                  .arg("--reasoning")
+                  .arg("off");
+
+              let command_line = format!(
+                  "{} -m {} -p <prompt> -n {} --temp {} -c {} --no-display-prompt --single-turn --reasoning off",
+                  request.profile.llama_cli_path,
+                  request.profile.model_path,
+                  request.profile.max_tokens,
+                  request.profile.temperature,
+                  request.profile.context_tokens
+              );'''
+          new = '''    let structured_output =
+                  detect_structured_output_mode(&request.profile.llama_cli_path)?;
+              let mut command = Command::new(&request.profile.llama_cli_path);
+              command
+                  .stdin(Stdio::null())
+                  .arg("-m")
+                  .arg(&request.profile.model_path)
+                  .arg("--system-prompt")
+                  .arg(&request.system_prompt)
+                  .arg("-p")
+                  .arg(&request.prompt)
+                  .arg("-n")
+                  .arg(request.profile.max_tokens.to_string())
+                  .arg("--temp")
+                  .arg("0")
+                  .arg("--top-k")
+                  .arg("1")
+                  .arg("-c")
+                  .arg(request.profile.context_tokens.to_string())
+                  .arg("--conversation")
+                  .arg("--single-turn")
+                  .arg("--simple-io")
+                  .arg("--no-display-prompt")
+                  .arg("--reasoning")
+                  .arg("off");
+
+              match structured_output {
+                  StructuredOutputMode::JsonSchema => {
+                      command.arg("--json-schema").arg(COMMAND_CARD_JSON_SCHEMA);
+                  }
+                  StructuredOutputMode::Grammar => {
+                      command.arg("--grammar").arg(COMMAND_CARD_GBNF);
+                  }
+              }
+
+              let constraint = match structured_output {
+                  StructuredOutputMode::JsonSchema => "--json-schema <command-card-schema>",
+                  StructuredOutputMode::Grammar => "--grammar <command-card-grammar>",
+              };
+              let command_line = format!(
+                  "{} -m {} --system-prompt <system> -p <prompt> -n {} --temp 0 --top-k 1 -c {} --conversation --single-turn --simple-io --no-display-prompt --reasoning off {}",
+                  request.profile.llama_cli_path,
+                  request.profile.model_path,
+                  request.profile.max_tokens,
+                  request.profile.context_tokens,
+                  constraint
+              );'''
+          if old not in text:
+              raise SystemExit('model command block not found')
+          ai.write_text(text.replace(old, new, 1))
+
+          provider = Path('crates/aish-provider/src/lib.rs')
+          text = provider.read_text()
+          text = text.replace(
+              'use aish_ai::{build_command_card_prompt, run_gguf_model, ModelProfile, ModelRunRequest};',
+              'use aish_ai::{\n    build_command_card_prompt, build_command_card_system_prompt, run_gguf_model, ModelProfile,\n    ModelRunRequest,\n};',
+              1,
+          )
+          text = text.replace(
+              'let result = run_gguf_model(ModelRunRequest { profile, prompt });',
+              'let system_prompt = build_command_card_system_prompt();\n    let result = run_gguf_model(ModelRunRequest {\n        profile,\n        system_prompt,\n        prompt,\n    });',
+              1,
+          )
+          text = text.replace(
+              'error: Some("could not parse command card".to_string()),',
+              'error: Some("the constrained model response was not a command card".to_string()),',
+              1,
+          )
+          provider.write_text(text)
+
+          setup = Path('apps/provider-shell/src/setup.rs')
+          text = setup.read_text()
+          old = '''fn set_windows_user_env(name: &str, value: &str) -> Result<(), String> {
+              let script = format!(
+                  "[Environment]::SetEnvironmentVariable('{}', $args[0], 'User')",
+                  name.replace("'", "''")
+              );
+              let status = Command::new("powershell")
+                  .args([
+                      "-NoProfile",
+                      "-ExecutionPolicy",
+                      "Bypass",
+                      "-Command",
+                      &script,
+                      value,
+                  ])
+                  .status()
+                  .map_err(|error| error.to_string())?;
+              if !status.success() {
+                  return Err(format!(
+                      "failed to persist user environment variable {name}"
+                  ));
+              }
+              Ok(())
+          }'''
+          new = '''fn set_windows_user_env(name: &str, value: &str) -> Result<(), String> {
+              let status = Command::new("powershell")
+                  .env("AISH_ENV_NAME", name)
+                  .env("AISH_ENV_VALUE", value)
+                  .args([
+                      "-NoProfile",
+                      "-NonInteractive",
+                      "-ExecutionPolicy",
+                      "Bypass",
+                      "-Command",
+                      "[Environment]::SetEnvironmentVariable($env:AISH_ENV_NAME, $env:AISH_ENV_VALUE, 'User')",
+                  ])
+                  .status()
+                  .map_err(|error| error.to_string())?;
+              if !status.success() {
+                  return Err(format!(
+                      "failed to persist user environment variable {name}"
+                  ));
+              }
+              Ok(())
+          }'''
+          if old not in text:
+              raise SystemExit('Windows environment function not found')
+          setup.write_text(text.replace(old, new, 1))
+
+          ci = Path('.github/workflows/ci.yml')
+          text = ci.read_text()
+          if 'cargo test -p aish-ai -p aish-provider' not in text:
+              text = text.replace(
+                  '      - run: cargo check --workspace\n',
+                  '      - run: cargo check --workspace\n      - run: cargo test -p aish-ai -p aish-provider\n',
+                  1,
+              )
+          ci.write_text(text)
+
+          Path('docs/releases/v0.4.2.md').write_text('''# AiSH v0.4.2\n\nAiSH 0.4.2 makes local command planning structurally reliable without request-specific prompt rules.\n\n## Fixed\n\n- Uses llama.cpp JSON Schema constrained decoding for command cards.\n- Falls back to an equivalent GBNF grammar when an older llama-cli lacks JSON Schema support.\n- Uses the model's chat template with a separate compact system prompt.\n- Uses deterministic generation for the structured planner.\n- Keeps generated commands behind AiSH's independent risk classifier and approval flow.\n- Persists Windows PATH and model environment variables without PowerShell argument-quoting failures.\n''')
+          PY
+
+          cargo fmt --all
+          cargo test -p aish-ai -p aish-provider
+          cargo check --workspace
+          rm .github/workflows/apply-command-card-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Constrain local command card generation"
+          git push origin fix/constrained-command-cards
+      - name: Open implementation pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base main \
+            --head fix/constrained-command-cards \
+            --title "Constrain local command card generation" \
+            --body "Uses llama.cpp JSON Schema constrained decoding with a GBNF fallback, the embedded model chat template, deterministic sampling, and the existing AiSH safety classifier. Also fixes Windows environment-variable persistence. The bootstrap workflow deletes itself in this PR."
