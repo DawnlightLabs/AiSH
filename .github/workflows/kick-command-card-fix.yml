@@ -1,73 +1,34 @@
-name: Verify v0.4.2 Release
+name: Full Validation
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/kick-command-card-fix.yml
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  verify:
-    runs-on: ubuntu-22.04
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace
+      - run: cargo check --workspace
+
+  site:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: apps/site
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
         with:
-          ref: release/v0.4.2
-          fetch-depth: 0
-      - name: Wait for and verify release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          expected=(
-            aish-windows-x64.zip
-            aish-windows-x64.zip.sha256
-            aish-windows-arm64.zip
-            aish-windows-arm64.zip.sha256
-            aish-macos-arm64.tar.gz
-            aish-macos-arm64.tar.gz.sha256
-            aish-linux-x64.tar.gz
-            aish-linux-x64.tar.gz.sha256
-            aish-linux-arm64.tar.gz
-            aish-linux-arm64.tar.gz.sha256
-            install
-            install.sh
-            install.ps1
-          )
-
-          for attempt in $(seq 1 40); do
-            if release_json="$(gh release view v0.4.2 --repo "$GH_REPO" --json tagName,name,isDraft,isPrerelease,publishedAt,assets 2>/dev/null)"; then
-              published="$(jq -r '.assets[].name' <<<"$release_json")"
-              missing=()
-              for file in "${expected[@]}"; do
-                grep -Fxq "$file" <<<"$published" || missing+=("$file")
-              done
-              if [[ ${#missing[@]} -eq 0 ]]; then
-                jq -n \
-                  --argjson release "$release_json" \
-                  --arg verified "true" \
-                  --argjson expected "$(printf '%s\n' "${expected[@]}" | jq -R . | jq -s .)" \
-                  '{verified: ($verified == "true"), expected: $expected, missing: [], release: $release}' \
-                  > docs/release-v0.4.2-status.json
-                git config user.name github-actions[bot]
-                git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-                git add docs/release-v0.4.2-status.json
-                git commit -m "Verify AiSH v0.4.2 release assets"
-                git push origin HEAD:release/v0.4.2
-                exit 0
-              fi
-              echo "Release exists but is missing: ${missing[*]}"
-            else
-              echo "Release is not published yet (attempt $attempt/40)."
-            fi
-            sleep 30
-          done
-
-          echo "v0.4.2 release did not become complete in time" >&2
-          exit 1
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
