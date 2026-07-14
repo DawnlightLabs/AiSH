@@ -1,0 +1,64 @@
+name: Trigger constrained command cards
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/kick-command-card-fix.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  trigger:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run prepared implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -b fix/constrained-command-cards
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path('.github/workflows/apply-command-card-fix.yml').read_text().splitlines()
+          step = next(i for i, line in enumerate(lines) if line.strip() == '- name: Implement schema-constrained generation')
+          run = next(i for i in range(step + 1, len(lines)) if lines[i].strip() == 'run: |')
+          script = []
+          for line in lines[run + 1:]:
+              if line.startswith('          '):
+                  script.append(line[10:])
+              elif not line.strip():
+                  script.append('')
+              else:
+                  break
+          Path('/tmp/implement-command-cards.sh').write_text('\n'.join(script) + '\n')
+          PY
+          bash /tmp/implement-command-cards.sh
+      - name: Remove trigger from implementation branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/constrained-command-cards
+          git checkout fix/constrained-command-cards
+          git pull --ff-only origin fix/constrained-command-cards
+          git rm .github/workflows/kick-command-card-fix.yml
+          git commit -m "Remove temporary command card trigger"
+          git push origin fix/constrained-command-cards
+      - name: Open implementation pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base main \
+            --head fix/constrained-command-cards \
+            --title "Constrain local command card generation" \
+            --body "Uses llama.cpp JSON Schema constrained decoding with a GBNF fallback, the embedded Qwen chat template, deterministic sampling, and the existing AiSH safety classifier. Also fixes Windows environment-variable persistence and removes the temporary workflows."
