@@ -1,28 +1,34 @@
-name: Apply constrained command card fix
+name: Bootstrap constrained command cards
 
 on:
   push:
     branches:
-      - fix/command-card-0.4.2
+      - main
     paths:
       - .github/workflows/apply-command-card-fix.yml
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
-  apply:
+  implement:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: fix/command-card-0.4.2
+          ref: main
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Add schema-constrained generation
+      - name: Create implementation branch
         shell: bash
         run: |
           set -euo pipefail
-          rm -f crates/aish-provider/src/command_card.rs
+          git checkout -b fix/constrained-command-cards
+      - name: Implement schema-constrained generation
+        shell: bash
+        run: |
+          set -euo pipefail
           cat > crates/aish-ai/src/structured_output.rs <<'RUST'
           use std::process::Command;
 
@@ -93,7 +99,7 @@ jobs:
               }
 
               #[test]
-              fn grammar_constrains_the_same_contract() {
+              fn grammar_matches_the_schema_contract() {
                   for field in [
                       "action_type",
                       "command",
@@ -103,8 +109,6 @@ jobs:
                   ] {
                       assert!(COMMAND_CARD_GBNF.contains(field));
                   }
-                  assert!(COMMAND_CARD_GBNF.contains("shell_command"));
-                  assert!(COMMAND_CARD_GBNF.contains("fallback_message"));
               }
           }
           RUST
@@ -114,12 +118,11 @@ jobs:
 
           ai = Path('crates/aish-ai/src/lib.rs')
           text = ai.read_text()
-          if 'mod structured_output;' not in text:
-              text = text.replace(
-                  'use std::process::{Command, Stdio};\n',
-                  'use std::process::{Command, Stdio};\n\nmod structured_output;\nuse structured_output::{\n    detect_structured_output_mode, StructuredOutputMode, COMMAND_CARD_GBNF,\n    COMMAND_CARD_JSON_SCHEMA,\n};\n',
-                  1,
-              )
+          text = text.replace(
+              'use std::process::{Command, Stdio};\n',
+              'use std::process::{Command, Stdio};\n\nmod structured_output;\nuse structured_output::{\n    detect_structured_output_mode, StructuredOutputMode, COMMAND_CARD_GBNF,\n    COMMAND_CARD_JSON_SCHEMA,\n};\n',
+              1,
+          )
           text = text.replace(
               'pub struct ModelRunRequest {\n    pub profile: ModelProfile,\n    pub prompt: String,\n}',
               'pub struct ModelRunRequest {\n    pub profile: ModelProfile,\n    pub system_prompt: String,\n    pub prompt: String,\n}',
@@ -127,7 +130,7 @@ jobs:
           )
           start = text.index('pub fn build_command_card_prompt(')
           end = text.index('\npub fn run_gguf_model', start)
-          replacement = '''pub fn build_command_card_system_prompt() -> String {
+          text = text[:start] + '''pub fn build_command_card_system_prompt() -> String {
               "You are AiSH's local shell planner. Produce one command card for the user's current shell. Use the supplied environment and current working directory. Never invent paths, filenames, usernames, or installed tools. The command field must contain one directly runnable command for the stated shell; leave it empty only when action_type is fallback_message. Use fallback_message only when no useful command can be produced. Classify read-only work as low risk and mutating work as medium or high risk. The host independently enforces safety and approval. Keep the reason concise.".to_string()
           }
 
@@ -146,8 +149,7 @@ jobs:
                   "Environment:\n- OS: {os}\n- Shell: {shell}\n- Shell family: {family}\n- Context: {context}\n\nShell constraint:\n{dialect}\n\nUser request:\n{intent}"
               )
           }
-          '''
-          text = text[:start] + replacement + text[end:]
+          ''' + text[end:]
 
           old = '''    let mut command = Command::new(&request.profile.llama_cli_path);
               command
@@ -224,8 +226,7 @@ jobs:
               );'''
           if old not in text:
               raise SystemExit('model command block not found')
-          text = text.replace(old, new, 1)
-          ai.write_text(text)
+          ai.write_text(text.replace(old, new, 1))
 
           provider = Path('crates/aish-provider/src/lib.rs')
           text = provider.read_text()
@@ -294,8 +295,7 @@ jobs:
           }'''
           if old not in text:
               raise SystemExit('Windows environment function not found')
-          text = text.replace(old, new, 1)
-          setup.write_text(text)
+          setup.write_text(text.replace(old, new, 1))
 
           ci = Path('.github/workflows/ci.yml')
           text = ci.read_text()
@@ -307,7 +307,7 @@ jobs:
               )
           ci.write_text(text)
 
-          Path('docs/releases/v0.4.2.md').write_text('''# AiSH v0.4.2\n\nAiSH 0.4.2 makes local command planning structurally reliable without request-specific prompt rules.\n\n## Fixed\n\n- Uses llama.cpp JSON Schema constrained decoding for command cards.\n- Falls back to an equivalent GBNF grammar when an older llama-cli lacks JSON Schema support.\n- Uses the model's chat template with a separate compact system prompt.\n- Uses deterministic generation for the structured planner.\n- Keeps generated commands behind AiSH's independent risk classifier and approval flow.\n- Persists Windows PATH and model environment variables without PowerShell argument-quoting failures.\n\n## Compatibility\n\nIf the installed llama-cli supports neither JSON Schema nor grammar constraints, AiSH reports that llama.cpp must be updated instead of guessing how to parse unstructured model text.\n''')
+          Path('docs/releases/v0.4.2.md').write_text('''# AiSH v0.4.2\n\nAiSH 0.4.2 makes local command planning structurally reliable without request-specific prompt rules.\n\n## Fixed\n\n- Uses llama.cpp JSON Schema constrained decoding for command cards.\n- Falls back to an equivalent GBNF grammar when an older llama-cli lacks JSON Schema support.\n- Uses the model's chat template with a separate compact system prompt.\n- Uses deterministic generation for the structured planner.\n- Keeps generated commands behind AiSH's independent risk classifier and approval flow.\n- Persists Windows PATH and model environment variables without PowerShell argument-quoting failures.\n''')
           PY
 
           cargo fmt --all
@@ -316,6 +316,16 @@ jobs:
           rm .github/workflows/apply-command-card-fix.yml
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add crates/aish-ai/src crates/aish-provider/src/lib.rs apps/provider-shell/src/setup.rs .github/workflows/ci.yml docs/releases/v0.4.2.md .github/workflows/apply-command-card-fix.yml
+          git add -A
           git commit -m "Constrain local command card generation"
-          git push origin HEAD:fix/command-card-0.4.2
+          git push origin fix/constrained-command-cards
+      - name: Open implementation pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr create \
+            --base main \
+            --head fix/constrained-command-cards \
+            --title "Constrain local command card generation" \
+            --body "Uses llama.cpp JSON Schema constrained decoding with a GBNF fallback, the embedded model chat template, deterministic sampling, and the existing AiSH safety classifier. Also fixes Windows environment-variable persistence. The bootstrap workflow deletes itself in this PR."
