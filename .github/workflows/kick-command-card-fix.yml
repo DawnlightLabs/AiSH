@@ -62,3 +62,5 @@ jobs:
             --head fix/constrained-command-cards \
             --title "Constrain local command card generation" \
             --body "Uses llama.cpp JSON Schema constrained decoding with a GBNF fallback, the embedded Qwen chat template, deterministic sampling, and the existing AiSH safety classifier. Also fixes Windows environment-variable persistence and removes the temporary workflows."
+
+# This second commit intentionally triggers the workflow after it exists on main.
