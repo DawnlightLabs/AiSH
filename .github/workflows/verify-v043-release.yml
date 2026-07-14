@@ -1,0 +1,66 @@
+name: Verify v0.4.3 Release
+
+on:
+  push:
+    branches: [release/v0.4.3]
+    paths: [.github/workflows/verify-v043-release.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: release/v0.4.3
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const expected = [
+              'aish-windows-x64.zip', 'aish-windows-x64.zip.sha256',
+              'aish-windows-arm64.zip', 'aish-windows-arm64.zip.sha256',
+              'aish-macos-arm64.tar.gz', 'aish-macos-arm64.tar.gz.sha256',
+              'aish-linux-x64.tar.gz', 'aish-linux-x64.tar.gz.sha256',
+              'aish-linux-arm64.tar.gz', 'aish-linux-arm64.tar.gz.sha256',
+              'install', 'install.sh', 'install.ps1'
+            ];
+            let release;
+            for (let attempt = 0; attempt < 60; attempt++) {
+              try {
+                const response = await github.rest.repos.getReleaseByTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag: 'v0.4.3'
+                });
+                release = response.data;
+                const names = new Set(release.assets.map(asset => asset.name));
+                if (expected.every(name => names.has(name))) break;
+              } catch (_) {}
+              await new Promise(resolve => setTimeout(resolve, 15000));
+            }
+            if (!release) core.setFailed('v0.4.3 release was not found');
+            const names = new Set(release.assets.map(asset => asset.name));
+            const missing = expected.filter(name => !names.has(name));
+            if (missing.length) core.setFailed(`Missing assets: ${missing.join(', ')}`);
+            const fs = require('fs');
+            fs.writeFileSync('docs/release-v0.4.3-status.json', JSON.stringify({
+              verified: missing.length === 0,
+              expected,
+              missing,
+              release: {
+                tagName: release.tag_name,
+                name: release.name,
+                isDraft: release.draft,
+                isPrerelease: release.prerelease,
+                publishedAt: release.published_at,
+                assets: release.assets.map(asset => ({name: asset.name, size: asset.size, state: asset.state}))
+              }
+            }, null, 2));
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/release-v0.4.3-status.json
+          git commit -m "Verify AiSH v0.4.3 release assets"
+          git push origin HEAD:release/v0.4.3
