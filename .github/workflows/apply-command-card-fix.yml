@@ -1,0 +1,497 @@
+name: Apply command card fix
+
+on:
+  push:
+    branches:
+      - fix/command-card-0.4.2
+    paths:
+      - .github/workflows/apply-command-card-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/command-card-0.4.2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Add tolerant command card parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > crates/aish-provider/src/command_card.rs <<'RUST'
+          use serde_json::{Map, Value};
+
+          #[derive(Debug, Clone, PartialEq, Eq)]
+          pub(crate) struct CommandCard {
+              pub(crate) action_type: String,
+              pub(crate) command: Option<String>,
+              pub(crate) risk: Option<String>,
+              pub(crate) reason: Option<String>,
+              pub(crate) fallback_message: Option<String>,
+          }
+
+          pub(crate) fn parse_command_card(raw: &str) -> Option<CommandCard> {
+              parse_command_card_inner(raw, true)
+          }
+
+          fn parse_command_card_inner(raw: &str, allow_nested_string: bool) -> Option<CommandCard> {
+              let cleaned = strip_code_fence(raw.trim());
+
+              if let Ok(value) = serde_json::from_str::<Value>(cleaned) {
+                  if let Some(card) = command_card_from_value(&value, allow_nested_string) {
+                      return Some(card);
+                  }
+              }
+
+              for candidate in balanced_objects(cleaned) {
+                  if let Ok(value) = serde_json::from_str::<Value>(candidate) {
+                      if let Some(card) = command_card_from_value(&value, allow_nested_string) {
+                          return Some(card);
+                      }
+                  }
+                  if let Some(card) = parse_relaxed_card(candidate) {
+                      return Some(card);
+                  }
+              }
+
+              parse_relaxed_card(cleaned)
+          }
+
+          fn command_card_from_value(value: &Value, allow_nested_string: bool) -> Option<CommandCard> {
+              match value {
+                  Value::Object(object) => command_card_from_object(object),
+                  Value::Array(values) => values
+                      .iter()
+                      .find_map(|value| command_card_from_value(value, allow_nested_string)),
+                  Value::String(text) if allow_nested_string => {
+                      parse_command_card_inner(text, false)
+                  }
+                  _ => None,
+              }
+          }
+
+          fn command_card_from_object(object: &Map<String, Value>) -> Option<CommandCard> {
+              let command = object_string(object, &["command", "shell_command", "cmd"]);
+              let risk = object_string(object, &["risk", "risk_level"]);
+              let reason = object_string(object, &["reason", "explanation"]);
+              let fallback_message = object_string(
+                  object,
+                  &["fallback_message", "fallback", "message", "response"],
+              );
+              let action = object_string(object, &["action_type", "action", "type"])
+                  .unwrap_or_else(|| inferred_action(&command, &fallback_message).to_string());
+              let action_type = normalize_action(&action);
+
+              if command.is_none()
+                  && fallback_message.is_none()
+                  && !(action_type == "fallback_message" && reason.is_some())
+              {
+                  return None;
+              }
+
+              Some(CommandCard {
+                  action_type,
+                  command,
+                  risk,
+                  reason,
+                  fallback_message,
+              })
+          }
+
+          fn object_string(object: &Map<String, Value>, aliases: &[&str]) -> Option<String> {
+              object.iter().find_map(|(key, value)| {
+                  if !aliases.iter().any(|alias| key.eq_ignore_ascii_case(alias)) {
+                      return None;
+                  }
+                  match value {
+                      Value::String(text) => non_empty(text),
+                      Value::Number(number) => Some(number.to_string()),
+                      Value::Bool(value) => Some(value.to_string()),
+                      _ => None,
+                  }
+              })
+          }
+
+          fn parse_relaxed_card(raw: &str) -> Option<CommandCard> {
+              let text = strip_code_fence(raw.trim());
+              let mut action = None;
+              let mut command = None;
+              let mut risk = None;
+              let mut reason = None;
+              let mut fallback_message = None;
+
+              for field in split_fields(text) {
+                  let Some((key, value)) = split_key_value(&field) else {
+                      continue;
+                  };
+                  let key = normalize_key(key);
+                  let value = clean_value(value);
+                  if value.is_empty() {
+                      continue;
+                  }
+                  match key.as_str() {
+                      "action_type" | "action" | "type" => action = Some(value),
+                      "command" | "shell_command" | "cmd" => command = Some(value),
+                      "risk" | "risk_level" => risk = Some(value),
+                      "reason" | "explanation" => reason = Some(value),
+                      "fallback_message" | "fallback" | "message" | "response" => {
+                          fallback_message = Some(value)
+                      }
+                      _ => {}
+                  }
+              }
+
+              let action_type = normalize_action(
+                  action
+                      .as_deref()
+                      .unwrap_or_else(|| inferred_action(&command, &fallback_message)),
+              );
+              if command.is_none()
+                  && fallback_message.is_none()
+                  && !(action_type == "fallback_message" && reason.is_some())
+              {
+                  return None;
+              }
+
+              Some(CommandCard {
+                  action_type,
+                  command,
+                  risk,
+                  reason,
+                  fallback_message,
+              })
+          }
+
+          fn strip_code_fence(raw: &str) -> &str {
+              let mut text = raw.trim();
+              if let Some(rest) = text.strip_prefix("```") {
+                  text = rest.split_once('\n').map(|(_, body)| body).unwrap_or(rest);
+                  text = text.trim_end();
+                  if let Some(body) = text.strip_suffix("```") {
+                      text = body.trim_end();
+                  }
+              }
+              text.trim()
+          }
+
+          fn balanced_objects(raw: &str) -> Vec<&str> {
+              let mut objects = Vec::new();
+              let mut start = None;
+              let mut depth = 0usize;
+              let mut quote = None;
+              let mut escaped = false;
+
+              for (index, character) in raw.char_indices() {
+                  if let Some(active_quote) = quote {
+                      if escaped {
+                          escaped = false;
+                          continue;
+                      }
+                      if character == '\\' {
+                          escaped = true;
+                      } else if character == active_quote {
+                          quote = None;
+                      }
+                      continue;
+                  }
+
+                  if character == '"' || character == '\'' {
+                      quote = Some(character);
+                      continue;
+                  }
+                  if character == '{' {
+                      if depth == 0 {
+                          start = Some(index);
+                      }
+                      depth += 1;
+                  } else if character == '}' && depth > 0 {
+                      depth -= 1;
+                      if depth == 0 {
+                          if let Some(begin) = start.take() {
+                              objects.push(&raw[begin..index + character.len_utf8()]);
+                          }
+                      }
+                  }
+              }
+
+              objects
+          }
+
+          fn split_fields(raw: &str) -> Vec<String> {
+              let mut fields = Vec::new();
+              let mut current = String::new();
+              let mut quote = None;
+              let mut escaped = false;
+
+              for character in raw.chars() {
+                  if let Some(active_quote) = quote {
+                      current.push(character);
+                      if escaped {
+                          escaped = false;
+                      } else if character == '\\' {
+                          escaped = true;
+                      } else if character == active_quote {
+                          quote = None;
+                      }
+                      continue;
+                  }
+
+                  if character == '"' || character == '\'' {
+                      quote = Some(character);
+                      current.push(character);
+                  } else if character == ',' || character == '\n' || character == '\r' {
+                      push_field(&mut fields, &mut current);
+                  } else {
+                      current.push(character);
+                  }
+              }
+              push_field(&mut fields, &mut current);
+              fields
+          }
+
+          fn push_field(fields: &mut Vec<String>, current: &mut String) {
+              let field = current.trim().trim_matches(|character| character == '{' || character == '}');
+              if !field.is_empty() {
+                  fields.push(field.to_string());
+              }
+              current.clear();
+          }
+
+          fn split_key_value(field: &str) -> Option<(&str, &str)> {
+              let mut quote = None;
+              let mut escaped = false;
+              for (index, character) in field.char_indices() {
+                  if let Some(active_quote) = quote {
+                      if escaped {
+                          escaped = false;
+                      } else if character == '\\' {
+                          escaped = true;
+                      } else if character == active_quote {
+                          quote = None;
+                      }
+                      continue;
+                  }
+                  if character == '"' || character == '\'' {
+                      quote = Some(character);
+                  } else if character == ':' || character == '=' {
+                      return Some((&field[..index], &field[index + character.len_utf8()..]));
+                  }
+              }
+              None
+          }
+
+          fn normalize_key(value: &str) -> String {
+              value
+                  .trim()
+                  .trim_matches(|character| {
+                      character == '"'
+                          || character == '\''
+                          || character == '`'
+                          || character == '{'
+                          || character == '}'
+                  })
+                  .trim()
+                  .to_ascii_lowercase()
+                  .replace(['-', ' '], "_")
+          }
+
+          fn clean_value(value: &str) -> String {
+              let mut value = value.trim();
+              while value.ends_with(',') || value.ends_with('}') {
+                  value = value[..value.len() - 1].trim_end();
+              }
+              if value.len() >= 2 {
+                  let first = value.chars().next().unwrap_or_default();
+                  let last = value.chars().last().unwrap_or_default();
+                  if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+                      return decode_quoted(&value[1..value.len() - 1], first).trim().to_string();
+                  }
+              }
+              value.trim_matches('`').trim().to_string()
+          }
+
+          fn decode_quoted(value: &str, quote: char) -> String {
+              let mut decoded = String::new();
+              let mut characters = value.chars();
+              while let Some(character) = characters.next() {
+                  if character != '\\' {
+                      decoded.push(character);
+                      continue;
+                  }
+                  let Some(next) = characters.next() else {
+                      decoded.push('\\');
+                      break;
+                  };
+                  match next {
+                      '\\' => decoded.push('\\'),
+                      '"' if quote == '"' => decoded.push('"'),
+                      '\'' if quote == '\'' => decoded.push('\''),
+                      'n' => decoded.push('\n'),
+                      'r' => decoded.push('\r'),
+                      't' => decoded.push('\t'),
+                      other => {
+                          decoded.push('\\');
+                          decoded.push(other);
+                      }
+                  }
+              }
+              decoded
+          }
+
+          fn inferred_action(command: &Option<String>, fallback: &Option<String>) -> &'static str {
+              if command.is_some() {
+                  "shell_command"
+              } else if fallback.is_some() {
+                  "fallback_message"
+              } else {
+                  "shell_command"
+              }
+          }
+
+          fn normalize_action(value: &str) -> String {
+              let normalized = value
+                  .trim()
+                  .to_ascii_lowercase()
+                  .replace(['-', ' '], "_");
+              if normalized.contains("fallback")
+                  || normalized == "message"
+                  || normalized == "response"
+                  || normalized == "explain"
+              {
+                  "fallback_message".to_string()
+              } else {
+                  "shell_command".to_string()
+              }
+          }
+
+          fn non_empty(value: &str) -> Option<String> {
+              let value = value.trim();
+              (!value.is_empty()).then(|| value.to_string())
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::parse_command_card;
+
+              #[test]
+              fn parses_strict_json() {
+                  let card = parse_command_card(
+                      r#"{"action_type":"shell_command","command":"Get-ChildItem -Directory","risk":"low","reason":"Lists folders"}"#,
+                  )
+                  .expect("strict card");
+                  assert_eq!(card.command.as_deref(), Some("Get-ChildItem -Directory"));
+                  assert_eq!(card.action_type, "shell_command");
+              }
+
+              #[test]
+              fn parses_fenced_json_with_prose() {
+                  let card = parse_command_card(
+                      "Here is the command:\n```json\n{\"action_type\":\"shell_command\",\"command\":\"Get-ChildItem -LiteralPath .\\\\aish-ours -Directory | Select-Object -First 10\",\"risk\":\"low\",\"reason\":\"Lists top-level folders\"}\n```",
+                  )
+                  .expect("fenced card");
+                  assert!(card.command.unwrap().contains("aish-ours"));
+              }
+
+              #[test]
+              fn parses_relaxed_windows_card() {
+                  let card = parse_command_card(
+                      r#"{action_type: "shell_command", command: "Get-ChildItem -LiteralPath C:\Users\Amaan\Downloads\aish-ours -Directory | Select-Object -First 10", risk: "low", reason: "Lists folders",}"#,
+                  )
+                  .expect("relaxed card");
+                  assert!(card.command.unwrap().contains(r"C:\Users\Amaan\Downloads\aish-ours"));
+              }
+
+              #[test]
+              fn parses_newline_key_value_card() {
+                  let card = parse_command_card(
+                      "action_type: shell_command\ncommand: Get-ChildItem -LiteralPath .\\aish-ours -Directory | Select-Object -First 10\nrisk: low\nreason: Lists top-level folders",
+                  )
+                  .expect("line card");
+                  assert_eq!(card.risk.as_deref(), Some("low"));
+                  assert!(card.command.unwrap().starts_with("Get-ChildItem"));
+              }
+
+              #[test]
+              fn parses_aliases_inside_array() {
+                  let card = parse_command_card(
+                      r#"[{"action":"run","cmd":"Get-Location","risk_level":"low","explanation":"Shows location"}]"#,
+                  )
+                  .expect("alias card");
+                  assert_eq!(card.command.as_deref(), Some("Get-Location"));
+              }
+
+              #[test]
+              fn rejects_unstructured_prose() {
+                  assert!(parse_command_card("I cannot provide a command for that request.").is_none());
+              }
+          }
+          RUST
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          provider = Path('crates/aish-provider/src/lib.rs')
+          text = provider.read_text()
+          text = text.replace(
+              'use std::path::PathBuf;\n',
+              'use std::path::PathBuf;\n\nmod command_card;\nuse command_card::parse_command_card;\n',
+              1,
+          )
+          old_struct = '''#[derive(Debug, Clone, Deserialize)]
+          struct CommandCard {
+              action_type: String,
+              command: Option<String>,
+              risk: Option<String>,
+              reason: Option<String>,
+              fallback_message: Option<String>,
+          }
+
+          '''
+          if old_struct not in text:
+              raise SystemExit('CommandCard struct block not found')
+          text = text.replace(old_struct, '', 1)
+          text = text.replace(
+              'let Ok(card) = serde_json::from_str::<CommandCard>(&body) else {',
+              'let Some(card) = parse_command_card(&body) else {',
+              1,
+          )
+          text = text.replace(
+              'error: Some("could not parse command card".to_string()),',
+              'error: Some("model returned an invalid command card; run /reasoning on to inspect it".to_string()),',
+              1,
+          )
+          provider.write_text(text)
+
+          prompt = Path('crates/aish-ai/src/lib.rs')
+          text = prompt.read_text()
+          text = text.replace(
+              'Return exactly one JSON object and nothing else. No markdown. No prose. No thinking text.\\nUse keys: action_type, command, risk, reason. For fallback use action_type, fallback_message, reason.',
+              'Return exactly one JSON object and nothing else. No markdown. No prose. No thinking text.\\nUse valid double-quoted JSON with no trailing commas. Example: {"action_type":"shell_command","command":"Get-Location","risk":"low","reason":"Shows the current location"}.\\nUse keys: action_type, command, risk, reason. For fallback use action_type, fallback_message, reason.',
+              1,
+          )
+          prompt.write_text(text)
+
+          ci = Path('.github/workflows/ci.yml')
+          text = ci.read_text()
+          text = text.replace(
+              '      - run: cargo check --workspace\n',
+              '      - run: cargo check --workspace\n      - run: cargo test -p aish-provider\n',
+              1,
+          )
+          ci.write_text(text)
+
+          Path('docs/releases/v0.4.2.md').write_text('''# AiSH v0.4.2\n\nAiSH 0.4.2 makes local-model command planning resilient to imperfect structured output.\n\n## Fixed\n\n- Accepts valid JSON, fenced JSON, JSON arrays, common field aliases, trailing commas, unquoted keys, and newline key/value command cards.\n- Preserves Windows backslashes when a small model emits invalid JSON escape sequences.\n- Keeps every recovered command behind AiSH local risk classification and approval rules.\n- Provides a `/reasoning on` diagnostic hint only when no safe command card can be recovered.\n\n## Example\n\nA request such as `list the top most subfolders in aish-ours` can now recover and run a PowerShell command even when the local 1.5B model returns a nearly-correct command card rather than strict JSON.\n''')
+          PY
+
+          cargo fmt --all
+          cargo test -p aish-provider
+          rm .github/workflows/apply-command-card-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add crates/aish-provider/src crates/aish-ai/src/lib.rs .github/workflows/ci.yml docs/releases/v0.4.2.md .github/workflows/apply-command-card-fix.yml
+          git commit -m "Harden local model command card parsing"
+          git push origin HEAD:fix/command-card-0.4.2
