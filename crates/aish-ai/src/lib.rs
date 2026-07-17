@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 mod structured_output;
 use structured_output::{
-    detect_structured_output_mode, StructuredOutputMode, COMMAND_CARD_GBNF,
+    inspect_llama_cli_capabilities, StructuredOutputMode, COMMAND_CARD_GBNF,
     COMMAND_CARD_JSON_SCHEMA,
 };
 
@@ -115,7 +115,7 @@ fn shell_family(os: &str, shell: &str) -> &'static str {
 }
 
 pub fn build_command_card_system_prompt() -> String {
-    "You are AiSH's local shell planner. Produce one command card for the user's current shell. Use only the supplied operating system, shell, current context, and user intent. The command must be directly runnable in that shell and must not invent paths, filenames, usernames, installed tools, or facts. Use fallback_message only when no useful command can be produced. Read-only work is low risk; state-changing work is medium or high risk. The host independently validates risk and approval. Keep the reason brief.".to_string()
+    "You are AiSH's local shell planner. Produce one command card for the user's current shell. Return exactly one JSON object with action_type, command, risk, reason, and fallback_message. action_type is shell_command or fallback_message; keep the inactive command or fallback field empty. Use only the supplied operating system, shell, current context, and user intent. The command must be directly runnable in that shell and must not invent paths, filenames, usernames, installed tools, or facts. Read-only work is low risk; state-changing work is medium or high risk. The host independently validates risk and approval. Keep the reason brief.".to_string()
 }
 
 pub fn build_command_card_prompt(intent: &str, context_json: &serde_json::Value) -> String {
@@ -162,16 +162,29 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
         ));
     }
 
-    let structured_output = detect_structured_output_mode(&request.profile.llama_cli_path)?;
+    let capabilities = inspect_llama_cli_capabilities(&request.profile.llama_cli_path)?;
+    let prompt = if capabilities.system_prompt {
+        request.prompt.clone()
+    } else {
+        format!(
+            "System instructions:\n{}\n\n{}",
+            request.system_prompt, request.prompt
+        )
+    };
+
     let mut command = Command::new(&request.profile.llama_cli_path);
     command
         .stdin(Stdio::null())
         .arg("-m")
-        .arg(&request.profile.model_path)
-        .arg("--system-prompt")
-        .arg(&request.system_prompt)
+        .arg(&request.profile.model_path);
+
+    if capabilities.system_prompt {
+        command.arg("--system-prompt").arg(&request.system_prompt);
+    }
+
+    command
         .arg("-p")
-        .arg(&request.prompt)
+        .arg(&prompt)
         .arg("-n")
         .arg(request.profile.max_tokens.to_string())
         .arg("--temp")
@@ -181,14 +194,34 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
         .arg("--seed")
         .arg("0")
         .arg("-c")
-        .arg(request.profile.context_tokens.to_string())
-        .arg("--conversation")
-        .arg("--single-turn")
-        .arg("--no-display-prompt")
-        .arg("--reasoning")
-        .arg("off");
+        .arg(request.profile.context_tokens.to_string());
 
-    match structured_output {
+    if capabilities.conversation {
+        command.arg("--conversation");
+    }
+    if capabilities.single_turn {
+        command.arg("--single-turn");
+    }
+    if capabilities.no_display_prompt {
+        command.arg("--no-display-prompt");
+    }
+    if capabilities.color {
+        command.args(["--color", "off"]);
+    }
+    if capabilities.simple_io {
+        command.arg("--simple-io");
+    }
+    if capabilities.no_show_timings {
+        command.arg("--no-show-timings");
+    }
+    if capabilities.log_disable {
+        command.arg("--log-disable");
+    }
+    if capabilities.no_warmup {
+        command.arg("--no-warmup");
+    }
+
+    match capabilities.mode {
         StructuredOutputMode::JsonSchema => {
             command.arg("--json-schema").arg(COMMAND_CARD_JSON_SCHEMA);
         }
@@ -197,12 +230,12 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
         }
     }
 
-    let constraint = match structured_output {
+    let constraint = match capabilities.mode {
         StructuredOutputMode::JsonSchema => "--json-schema <command-card-schema>",
         StructuredOutputMode::Grammar => "--grammar <command-card-grammar>",
     };
     let command_line = format!(
-        "{} -m {} --system-prompt <system> -p <prompt> -n {} --temp 0 --top-k 1 --seed 0 -c {} --conversation --single-turn --no-display-prompt --reasoning off {}",
+        "{} -m {} -p <prompt> -n {} --temp 0 --top-k 1 --seed 0 -c {} {}",
         request.profile.llama_cli_path,
         request.profile.model_path,
         request.profile.max_tokens,
@@ -233,11 +266,12 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
 }
 
 fn clean_model_output(raw: &str) -> String {
-    if let Some(json) = extract_json_object(raw) {
+    let normalized = strip_ansi(raw);
+    if let Some(json) = extract_command_card_json(&normalized) {
         return json;
     }
 
-    let text = clean_runtime_text(raw);
+    let text = clean_runtime_text(&normalized);
     if text.trim().is_empty() {
         "No model response returned.".to_string()
     } else {
@@ -246,42 +280,131 @@ fn clean_model_output(raw: &str) -> String {
 }
 
 fn clean_runtime_text(raw: &str) -> String {
-    let mut kept = Vec::new();
-    let mut skipping_prompt = false;
-
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.contains("llama_")
-            || trimmed.contains("ggml_")
-            || trimmed.contains("print_info:")
-        {
-            continue;
-        }
-        if trimmed.starts_with("You are Ken") {
-            skipping_prompt = true;
-            continue;
-        }
-        if skipping_prompt {
-            if trimmed.starts_with('{') {
-                skipping_prompt = false;
-            } else {
-                continue;
-            }
-        }
-        kept.push(trimmed.to_string());
-    }
-
-    kept.join("\n")
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            !line.contains("llama_")
+                && !line.contains("ggml_")
+                && !line.contains("print_info:")
+                && !line.starts_with("main: build")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn extract_json_object(raw: &str) -> Option<String> {
-    let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
-    if end <= start {
-        return None;
+fn extract_command_card_json(raw: &str) -> Option<String> {
+    let mut selected = None;
+
+    for (start, ch) in raw.char_indices() {
+        if ch != '{' {
+            continue;
+        }
+        let Some(length) = matching_json_object_length(&raw[start..]) else {
+            continue;
+        };
+        let candidate = &raw[start..start + length];
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) else {
+            continue;
+        };
+        if is_command_card_value(&value) {
+            selected = Some(candidate.trim().to_string());
+        }
     }
-    Some(raw[start..=end].trim().to_string())
+
+    selected
+}
+
+fn matching_json_object_length(value: &str) -> Option<usize> {
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in value.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(offset + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn is_command_card_value(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    matches!(
+        object
+            .get("action_type")
+            .and_then(serde_json::Value::as_str),
+        Some("shell_command" | "fallback_message")
+    ) && object.get("command").is_some()
+        && object.get("risk").is_some()
+        && object.get("reason").is_some()
+        && object.get("fallback_message").is_some()
+}
+
+fn strip_ansi(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for code in chars.by_ref() {
+                if ('@'..='~').contains(&code) {
+                    break;
+                }
+            }
+            continue;
+        }
+        output.push(ch);
+    }
+
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clean_model_output, extract_command_card_json};
+
+    const CARD: &str = r#"{"action_type":"shell_command","command":"Set-Location \"$HOME\\Downloads\"","risk":"low","reason":"Navigate to Downloads.","fallback_message":""}"#;
+
+    #[test]
+    fn selects_the_command_card_instead_of_echoed_context_json() {
+        let raw = format!(
+            "Context JSON:\n{{\"cwd\":\"C:\\\\Users\\\\Amaan\",\"nested\":{{\"kind\":\"repo\"}}}}\nassistant:\n{CARD}\n"
+        );
+        assert_eq!(clean_model_output(&raw), CARD);
+    }
+
+    #[test]
+    fn accepts_fenced_and_colored_strict_json() {
+        let raw = format!("\u{1b}[36m```json\n{CARD}\n```\u{1b}[0m");
+        assert_eq!(clean_model_output(&raw), CARD);
+    }
+
+    #[test]
+    fn rejects_unrelated_json_objects() {
+        assert!(extract_command_card_json(r#"{"cwd":"C:/Users/Amaan"}"#).is_none());
+    }
 }

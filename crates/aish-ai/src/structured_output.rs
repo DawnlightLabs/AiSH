@@ -32,9 +32,23 @@ pub(crate) enum StructuredOutputMode {
     Grammar,
 }
 
-pub(crate) fn detect_structured_output_mode(
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LlamaCliCapabilities {
+    pub mode: StructuredOutputMode,
+    pub system_prompt: bool,
+    pub conversation: bool,
+    pub single_turn: bool,
+    pub no_display_prompt: bool,
+    pub color: bool,
+    pub simple_io: bool,
+    pub no_show_timings: bool,
+    pub log_disable: bool,
+    pub no_warmup: bool,
+}
+
+pub(crate) fn inspect_llama_cli_capabilities(
     llama_cli_path: &str,
-) -> Result<StructuredOutputMode, String> {
+) -> Result<LlamaCliCapabilities, String> {
     let output = Command::new(llama_cli_path)
         .arg("--help")
         .output()
@@ -45,25 +59,38 @@ pub(crate) fn detect_structured_output_mode(
         String::from_utf8_lossy(&output.stderr)
     );
 
-    mode_from_help(&help).ok_or_else(|| {
+    capabilities_from_help(&help).ok_or_else(|| {
         "The installed llama-cli does not support JSON Schema or grammar-constrained output. Update llama.cpp and run AiSH setup again.".to_string()
     })
 }
 
-fn mode_from_help(help: &str) -> Option<StructuredOutputMode> {
-    if help.contains("--json-schema") {
-        Some(StructuredOutputMode::JsonSchema)
+fn capabilities_from_help(help: &str) -> Option<LlamaCliCapabilities> {
+    let mode = if help.contains("--json-schema") {
+        StructuredOutputMode::JsonSchema
     } else if help.contains("--grammar") {
-        Some(StructuredOutputMode::Grammar)
+        StructuredOutputMode::Grammar
     } else {
-        None
-    }
+        return None;
+    };
+
+    Some(LlamaCliCapabilities {
+        mode,
+        system_prompt: help.contains("--system-prompt"),
+        conversation: help.contains("--conversation"),
+        single_turn: help.contains("--single-turn"),
+        no_display_prompt: help.contains("--no-display-prompt"),
+        color: help.contains("--color"),
+        simple_io: help.contains("--simple-io"),
+        no_show_timings: help.contains("--no-show-timings"),
+        log_disable: help.contains("--log-disable"),
+        no_warmup: help.contains("--no-warmup"),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        mode_from_help, StructuredOutputMode, COMMAND_CARD_GBNF, COMMAND_CARD_JSON_SCHEMA,
+        capabilities_from_help, StructuredOutputMode, COMMAND_CARD_GBNF, COMMAND_CARD_JSON_SCHEMA,
     };
 
     #[test]
@@ -88,15 +115,19 @@ mod tests {
     }
 
     #[test]
-    fn prefers_json_schema_and_falls_back_to_grammar() {
-        assert_eq!(
-            mode_from_help("--grammar GBNF --json-schema SCHEMA"),
-            Some(StructuredOutputMode::JsonSchema)
-        );
-        assert_eq!(
-            mode_from_help("--grammar GBNF"),
-            Some(StructuredOutputMode::Grammar)
-        );
-        assert_eq!(mode_from_help("--temp N"), None);
+    fn inspects_structured_and_quiet_output_flags() {
+        let capabilities = capabilities_from_help(
+            "--grammar --json-schema --system-prompt --conversation --single-turn \
+             --no-display-prompt --color --simple-io --no-show-timings --log-disable --no-warmup",
+        )
+        .expect("capabilities");
+        assert_eq!(capabilities.mode, StructuredOutputMode::JsonSchema);
+        assert!(capabilities.system_prompt);
+        assert!(capabilities.simple_io);
+        assert!(capabilities.log_disable);
+
+        let grammar = capabilities_from_help("--grammar").expect("grammar fallback");
+        assert_eq!(grammar.mode, StructuredOutputMode::Grammar);
+        assert!(capabilities_from_help("--temp N").is_none());
     }
 }
