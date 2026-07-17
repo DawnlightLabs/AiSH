@@ -1,0 +1,51 @@
+name: Apply AI Run routing fix
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/ai-run-routing-v044
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply routing and output fixes
+        run: |
+          python3 .github/scripts/apply_ai_run_routing_fix.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/aish-ai/src/lib.rs')
+          text = path.read_text()
+          text = text.replace(
+              r'''const CARD: &str = r#"{"action_type":"shell_command","command":"Set-Location \\"$HOME\\Downloads\\"","risk":"low","reason":"Navigate to Downloads.","fallback_message":""}"#;''',
+              r'''const CARD: &str = r#"{"action_type":"shell_command","command":"Set-Location \"$HOME\\Downloads\"","risk":"low","reason":"Navigate to Downloads.","fallback_message":""}"#;''',
+          )
+          text = text.replace(
+              r'''let raw = format!("\\u{{1b}}[36m```json\n{CARD}\n```\\u{{1b}}[0m");''',
+              r'''let raw = format!("\u{1b}[36m```json\n{CARD}\n```\u{1b}[0m");''',
+          )
+          path.write_text(text)
+          PY
+          cargo fmt --all
+      - name: Test routing and command-card transport
+        run: |
+          cargo test -p aish-ai -p aish-provider -p aish-provider-shell
+          cargo check --workspace
+      - name: Commit tested implementation
+        run: |
+          rm -f .github/scripts/apply_ai_run_routing_fix.py
+          rm -f .github/workflows/apply-ai-run-routing-fix.yml
+          rm -f docs/placeholder-temp
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix AI Run routing and command card transport"
+          git push origin HEAD:fix/ai-run-routing-v044
