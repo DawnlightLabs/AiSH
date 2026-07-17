@@ -53,7 +53,7 @@ fn main() {
     println!("version: {}", updater::current_version());
     println!("{COPYRIGHT}");
     println!(
-        "Mode: {}. Type /mode normal, /mode ai, commands, natural language, or /help.",
+        "Mode: {}. Natural language is the default; use //command to force a literal shell command. Type /help for controls.",
         describe_provider_mode(&state.session.mode)
     );
 
@@ -335,7 +335,7 @@ fn print_help() {
     println!("  /approve               approve pending risky command");
     println!("  /cancel                cancel pending risky command");
     println!("  /exit                  exit provider shell");
-    println!("  //text                 send a literal slash-prefixed line");
+    println!("  //command              force a literal shell command while AI mode is active");
 }
 
 fn set_mode(state: &mut ProviderState, mode: ProviderInputMode) {
@@ -501,36 +501,153 @@ fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
 }
 
 fn looks_like_command_attempt(input: &str) -> bool {
-    if looks_like_direct_command(input) {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.ends_with('?') {
+        return false;
+    }
+
+    if has_explicit_shell_syntax(trimmed) {
         return true;
     }
 
-    let words: Vec<&str> = input.split_whitespace().collect();
-    if words.is_empty() || input.ends_with('?') {
+    let mut words = trimmed.split_whitespace();
+    let first = words.next().unwrap_or_default().to_ascii_lowercase();
+    let second = words.next().map(|value| value.to_ascii_lowercase());
+
+    // `go` is both a natural-language verb and the Go toolchain executable.
+    // Only treat it as a literal command when the next token is a real Go CLI subcommand.
+    if first == "go" {
+        return is_go_cli_invocation(second.as_deref());
+    }
+
+    if is_natural_language_lead(&first) {
         return false;
     }
 
-    let first = words[0].to_lowercase();
-    let nlp_verbs = [
+    is_high_confidence_command(&first)
+}
+
+fn has_explicit_shell_syntax(input: &str) -> bool {
+    if input.contains("&&")
+        || input.contains("||")
+        || input.contains(" | ")
+        || input.contains("; ")
+        || input.starts_with("./")
+        || input.starts_with(".\\")
+        || input.starts_with("~/")
+        || input.starts_with("~\\")
+    {
+        return true;
+    }
+
+    let first = input.split_whitespace().next().unwrap_or_default();
+    let lower = first.to_ascii_lowercase();
+    first.contains('\\')
+        || (first.contains('/') && !lower.starts_with("http://") && !lower.starts_with("https://"))
+        || [".exe", ".cmd", ".bat", ".ps1", ".sh"]
+            .iter()
+            .any(|suffix| lower.ends_with(suffix))
+}
+
+fn is_natural_language_lead(first: &str) -> bool {
+    [
         "show", "find", "create", "make", "run", "install", "open", "explain", "what", "why",
-        "how", "can", "please", "list", "tell", "check", "go", "change", "switch",
-    ];
+        "how", "can", "could", "would", "please", "list", "tell", "check", "change", "switch",
+        "move", "copy", "delete", "remove", "rename", "take", "give", "print", "display",
+        "navigate", "enter", "leave", "search", "look", "help", "set", "use",
+    ]
+    .contains(&first)
+}
 
-    if nlp_verbs.contains(&first.as_str()) {
-        return false;
-    }
+fn is_go_cli_invocation(second: Option<&str>) -> bool {
+    matches!(
+        second,
+        Some(
+            "bug"
+                | "build"
+                | "clean"
+                | "doc"
+                | "env"
+                | "fix"
+                | "fmt"
+                | "generate"
+                | "get"
+                | "install"
+                | "list"
+                | "mod"
+                | "run"
+                | "test"
+                | "tool"
+                | "version"
+                | "vet"
+                | "work"
+        )
+    )
+}
 
-    input.contains("--")
-        || input.contains(" -")
-        || input.contains('|')
-        || input.contains("&&")
-        || input.contains('\\')
-        || input.contains('/')
-        || input.contains('.')
-        || (words.len() > 1
-            && first
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
+fn is_high_confidence_command(first: &str) -> bool {
+    [
+        "cd",
+        "set-location",
+        "sl",
+        "dir",
+        "ls",
+        "pwd",
+        "get-location",
+        "cat",
+        "get-content",
+        "echo",
+        "write-output",
+        "clear",
+        "cls",
+        "git",
+        "gh",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bun",
+        "node",
+        "python",
+        "python3",
+        "py",
+        "pip",
+        "pip3",
+        "cargo",
+        "rustc",
+        "docker",
+        "docker-compose",
+        "kubectl",
+        "helm",
+        "terraform",
+        "winget",
+        "choco",
+        "scoop",
+        "code",
+        "cursor",
+        "mkdir",
+        "new-item",
+        "touch",
+        "rm",
+        "del",
+        "remove-item",
+        "cp",
+        "copy-item",
+        "mv",
+        "move-item",
+        "get-childitem",
+        "select-string",
+        "findstr",
+        "test-path",
+        "invoke-webrequest",
+        "curl",
+        "wget",
+        "rg",
+        "fd",
+        "jq",
+        "sed",
+        "awk",
+    ]
+    .contains(&first)
 }
 
 fn run_shell_command(command: &str) -> bool {
@@ -559,17 +676,20 @@ fn run_shell_command(command: &str) -> bool {
 
 fn handle_cd(command: &str) -> Option<bool> {
     let trimmed = command.trim();
-    let lower = trimmed.to_lowercase();
-    let target = if lower == "cd" || lower == "set-location" {
+    let target = if trimmed.eq_ignore_ascii_case("cd")
+        || trimmed.eq_ignore_ascii_case("set-location")
+        || trimmed.eq_ignore_ascii_case("sl")
+    {
         home_dir()
-    } else if lower.starts_with("cd ") {
-        PathBuf::from(unquote(&trimmed[3..]))
-    } else if lower.starts_with("set-location ") {
-        PathBuf::from(unquote(&trimmed[13..]))
     } else {
-        return None;
+        let remainder = command_remainder(trimmed, "cd ")
+            .or_else(|| command_remainder(trimmed, "set-location "))
+            .or_else(|| command_remainder(trimmed, "sl "))?;
+        let remainder = strip_location_parameter(remainder);
+        expand_shell_path(&unquote(remainder))
     };
-    if let Err(error) = env::set_current_dir(expand_home(target)) {
+
+    if let Err(error) = env::set_current_dir(target) {
         eprintln!("cd failed: {error}");
         Some(false)
     } else {
@@ -577,45 +697,52 @@ fn handle_cd(command: &str) -> Option<bool> {
     }
 }
 
-fn looks_like_direct_command(input: &str) -> bool {
-    let first = input
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_lowercase();
-    let direct = [
-        "cd",
-        "dir",
-        "ls",
-        "pwd",
-        "cat",
-        "type",
-        "echo",
-        "clear",
-        "cls",
-        "git",
-        "npm",
-        "pnpm",
-        "yarn",
-        "bun",
-        "node",
-        "python",
-        "pip",
-        "cargo",
-        "go",
-        "docker",
-        "kubectl",
-        "where",
-        "which",
-        "grep",
-        "find",
-        "mkdir",
-        "touch",
-        "get-childitem",
-        "get-location",
-        "select-string",
-    ];
-    direct.contains(&first.as_str()) || input.contains('|') || input.contains("&&")
+fn command_remainder<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .map(|_| &value[prefix.len()..])
+}
+
+fn strip_location_parameter(value: &str) -> &str {
+    let trimmed = value.trim();
+    command_remainder(trimmed, "-literalpath ")
+        .or_else(|| command_remainder(trimmed, "-path "))
+        .unwrap_or(trimmed)
+}
+
+fn expand_shell_path(value: &str) -> PathBuf {
+    let trimmed = value.trim();
+    for prefix in [
+        "~/",
+        "~\\",
+        "$HOME/",
+        "$HOME\\",
+        "$env:USERPROFILE/",
+        "$env:USERPROFILE\\",
+        "%USERPROFILE%/",
+        "%USERPROFILE%\\",
+    ] {
+        if let Some(rest) = strip_prefix_ascii_case(trimmed, prefix) {
+            return home_dir().join(rest);
+        }
+    }
+
+    if ["~", "$HOME", "$env:USERPROFILE", "%USERPROFILE%"]
+        .iter()
+        .any(|candidate| trimmed.eq_ignore_ascii_case(candidate))
+    {
+        return home_dir();
+    }
+
+    PathBuf::from(trimmed)
+}
+
+fn strip_prefix_ascii_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .map(|_| &value[prefix.len()..])
 }
 
 fn default_profile() -> ModelProfile {
@@ -673,4 +800,39 @@ fn unquote(value: &str) -> String {
         .trim_matches('"')
         .trim_matches('\'')
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{expand_shell_path, looks_like_command_attempt};
+
+    #[test]
+    fn ai_mode_routes_navigation_language_to_the_planner() {
+        assert!(!looks_like_command_attempt("go to downloads"));
+        assert!(!looks_like_command_attempt(
+            "navigate to the Downloads folder"
+        ));
+        assert!(!looks_like_command_attempt("list the top-level folders"));
+    }
+
+    #[test]
+    fn ai_mode_keeps_high_confidence_commands_literal() {
+        assert!(looks_like_command_attempt("git status"));
+        assert!(looks_like_command_attempt("Get-ChildItem -Directory"));
+        assert!(looks_like_command_attempt("go version"));
+        assert!(looks_like_command_attempt(".\\tools\\build.ps1"));
+    }
+
+    #[test]
+    fn navigation_expands_common_home_forms() {
+        let home = super::home_dir();
+        assert_eq!(
+            expand_shell_path("$HOME\\Downloads"),
+            home.join("Downloads")
+        );
+        assert_eq!(
+            expand_shell_path("$env:USERPROFILE\\Downloads"),
+            home.join("Downloads")
+        );
+    }
 }
