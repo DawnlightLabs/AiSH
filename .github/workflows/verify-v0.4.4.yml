@@ -26,6 +26,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # Verify the exact public release artifact contract.
           expected=(
             aish-windows-x64.zip
             aish-windows-x64.zip.sha256
