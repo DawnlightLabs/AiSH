@@ -1,0 +1,53 @@
+name: Apply AI Run routing fix v2
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-and-commit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/ai-run-routing-v044
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply implementation
+        run: |
+          python3 .github/scripts/apply_ai_run_routing_fix.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/aish-ai/src/lib.rs')
+          text = path.read_text()
+          text = text.replace(
+              r'''const CARD: &str = r#"{"action_type":"shell_command","command":"Set-Location \\"$HOME\\Downloads\\"","risk":"low","reason":"Navigate to Downloads.","fallback_message":""}"#;''',
+              r'''const CARD: &str = r#"{"action_type":"shell_command","command":"Set-Location \"$HOME\\Downloads\"","risk":"low","reason":"Navigate to Downloads.","fallback_message":""}"#;''',
+          )
+          text = text.replace(
+              r'''let raw = format!("\\u{{1b}}[36m```json\n{CARD}\n```\\u{{1b}}[0m");''',
+              r'''let raw = format!("\u{1b}[36m```json\n{CARD}\n```\u{1b}[0m");''',
+          )
+          path.write_text(text)
+          PY
+          cargo fmt --all
+      - name: Validate implementation
+        run: |
+          cargo test -p aish-ai -p aish-provider -p aish-provider-shell
+          cargo check --workspace
+      - name: Commit implementation files
+        run: |
+          git checkout origin/main -- .github/workflows/ci.yml .github/workflows/apply-command-card-fix.yml
+          rm -f docs/placeholder-temp
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apps/provider-shell/src/main_setup.rs
+          git add crates/aish-ai/src/lib.rs crates/aish-ai/src/structured_output.rs
+          git add docs/releases/v0.4.4.md
+          git add -A docs/placeholder-temp
+          git commit -m "Fix AI Run routing and command card transport"
+          git push origin HEAD:fix/ai-run-routing-v044
