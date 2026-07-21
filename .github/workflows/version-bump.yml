@@ -1,10 +1,10 @@
-name: Release Version
+name: Release AiSH
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "New or existing version, for example 0.4.0"
+        description: "New version, for example 0.4.6"
         required: true
         type: string
       make_latest:
@@ -23,25 +23,17 @@ on:
         options:
           - "false"
           - "true"
-  push:
-    branches:
-      - "release/v*"
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-version-${{ github.ref }}
+  group: release-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
-  bump:
-    name: bump-and-tag
+  bump-and-tag:
     runs-on: ubuntu-22.04
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
-      tag_exists: ${{ steps.version.outputs.tag_exists }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -51,37 +43,26 @@ jobs:
       - name: Resolve and validate version
         id: version
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            raw="${{ inputs.version }}"
-          else
-            raw="${GITHUB_REF_NAME#release/v}"
-          fi
-          version="${raw#v}"
+          version="${INPUT_VERSION#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Version must look exactly like 0.4.0" >&2
+            echo "Version must look exactly like 0.4.6" >&2
             exit 1
           fi
 
           tag="v$version"
           if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
-            tagged_version="$(git show "$tag:apps/provider-shell/Cargo.toml" | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -n1)"
-            if [[ "$tagged_version" != "$version" ]]; then
-              echo "Tag $tag contains provider version $tagged_version" >&2
-              exit 1
-            fi
-            echo "Tag $tag already exists; rebuilding and republishing its assets."
-            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $tag already exists. Use Provider Release to rebuild that existing tag." >&2
+            exit 1
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Update package version
-        if: steps.version.outputs.tag_exists != 'true'
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -93,28 +74,22 @@ jobs:
           test "$actual" = "$VERSION"
 
       - name: Commit version and push tag
-        if: steps.version.outputs.tag_exists != 'true'
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add apps/provider-shell/Cargo.toml Cargo.lock
-          if ! git diff --cached --quiet; then
-            git commit -m "Bump AiSH to v$VERSION"
-            git push origin HEAD:main
-          fi
-          git tag "v$VERSION"
-          git push origin "v$VERSION"
+          git commit -m "Bump AiSH to v$VERSION"
+          git push origin HEAD:main
+          git tag "$TAG"
+          git push origin "$TAG"
 
-  publish:
-    name: build-and-publish
-    needs: bump
-    uses: ./.github/workflows/provider-release.yml
-    with:
-      version: ${{ needs.bump.outputs.tag }}
-      make_latest: ${{ github.event_name == 'workflow_dispatch' && inputs.make_latest || 'true' }}
-      prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || 'false' }}
-    secrets: inherit
+      - name: Release handoff
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          echo "$TAG was tagged successfully. The existing Provider Release workflow will build and publish it once."
