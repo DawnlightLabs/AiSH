@@ -49,6 +49,7 @@ env:
   RELEASE_TAG: ${{ inputs.version || github.ref_name }}
   MAKE_LATEST: ${{ inputs.make_latest || 'true' }}
   PRERELEASE: ${{ inputs.prerelease || 'false' }}
+  LLAMA_CPP_RELEASE: b10075
 
 concurrency:
   group: provider-release-${{ inputs.version || github.ref_name }}
@@ -66,22 +67,27 @@ jobs:
             os: windows-latest
             artifact: aish-windows-x64.zip
             bin: target/release/aish.exe
+            llama_asset: llama-b10075-bin-win-cpu-x64.zip
           - name: windows-arm64
             os: windows-11-arm
             artifact: aish-windows-arm64.zip
             bin: target/release/aish.exe
+            llama_asset: llama-b10075-bin-win-cpu-arm64.zip
           - name: macos-arm64
             os: macos-14
             artifact: aish-macos-arm64.tar.gz
             bin: target/release/aish
+            llama_asset: llama-b10075-bin-macos-arm64.tar.gz
           - name: linux-x64
             os: ubuntu-22.04
             artifact: aish-linux-x64.tar.gz
             bin: target/release/aish
+            llama_asset: llama-b10075-bin-ubuntu-x64.tar.gz
           - name: linux-arm64
             os: ubuntu-24.04-arm
             artifact: aish-linux-arm64.tar.gz
             bin: target/release/aish
+            llama_asset: llama-b10075-bin-ubuntu-arm64.tar.gz
 
     steps:
       - uses: actions/checkout@v5
@@ -143,13 +149,53 @@ jobs:
             [ReleaseIconCheck]::FreeLibrary($module) | Out-Null
           }
 
+      - name: Bundle llama.cpp runtime on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asset = '${{ matrix.llama_asset }}'
+          $url = "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_CPP_RELEASE/$asset"
+          $archive = Join-Path $env:RUNNER_TEMP $asset
+          $extract = Join-Path $env:RUNNER_TEMP "llama-runtime"
+          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+          $cli = Get-ChildItem -Path $extract -Filter llama-cli.exe -Recurse | Select-Object -First 1
+          if (-not $cli) { throw "$asset did not contain llama-cli.exe" }
+          New-Item -ItemType Directory -Force dist/runtime | Out-Null
+          Copy-Item -Path (Join-Path $cli.Directory.FullName '*') -Destination dist/runtime -Recurse -Force
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ggml-org/llama.cpp/$env:LLAMA_CPP_RELEASE/LICENSE" -OutFile dist/runtime/llama.cpp-LICENSE -UseBasicParsing
+          if (-not (Test-Path dist/runtime/llama-cli.exe)) { throw 'Bundled runtime is incomplete.' }
+
+      - name: Bundle llama.cpp runtime on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset='${{ matrix.llama_asset }}'
+          url="https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_CPP_RELEASE/$asset"
+          archive="$RUNNER_TEMP/$asset"
+          extract="$RUNNER_TEMP/llama-runtime"
+          curl --fail --location --retry 3 "$url" --output "$archive"
+          rm -rf "$extract"
+          mkdir -p "$extract" dist/runtime
+          tar -xzf "$archive" -C "$extract"
+          cli="$(find "$extract" -type f -name llama-cli -print -quit)"
+          test -n "$cli" || { echo "$asset did not contain llama-cli" >&2; exit 1; }
+          cp -R "$(dirname "$cli")"/. dist/runtime/
+          chmod +x dist/runtime/llama-cli
+          curl --fail --location --retry 3 \
+            "https://raw.githubusercontent.com/ggml-org/llama.cpp/$LLAMA_CPP_RELEASE/LICENSE" \
+            --output dist/runtime/llama.cpp-LICENSE
+          test -x dist/runtime/llama-cli
+
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item '${{ matrix.bin }}' dist/aish.exe
-          Compress-Archive -Path dist/aish.exe -DestinationPath '${{ matrix.artifact }}' -Force
+          Compress-Archive -Path dist/* -DestinationPath '${{ matrix.artifact }}' -Force
           $hash = (Get-FileHash '${{ matrix.artifact }}' -Algorithm SHA256).Hash.ToLower()
           "$hash  ${{ matrix.artifact }}" | Set-Content '${{ matrix.artifact }}.sha256'
 
@@ -161,7 +207,7 @@ jobs:
           mkdir -p dist
           cp "${{ matrix.bin }}" dist/aish
           chmod +x dist/aish
-          tar -czf "${{ matrix.artifact }}" -C dist aish
+          tar -czf "${{ matrix.artifact }}" -C dist aish runtime
           shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
 
       - name: Stage release artifact

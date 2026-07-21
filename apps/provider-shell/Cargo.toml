@@ -8,7 +8,7 @@ autobins = false
 
 [[bin]]
 name = "aish"
-path = "src/main_setup.rs"
+path = "src/main.rs"
 
 [dependencies]
 aish-ai = { path = "../../crates/aish-ai" }

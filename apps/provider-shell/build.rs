@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 fn main() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not available"));
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not available"));
+
+    generate_legacy_main(&manifest_dir, &out_dir);
+
     let source_png = manifest_dir
         .join("../..")
         .join("assets/png/aish-app-icon-dark-256x256.png");
@@ -14,7 +18,6 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", source_png.display()));
     let ico = png_to_single_image_ico(&png, &source_png);
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not available"));
     let icon_path = out_dir.join("aish.ico");
     fs::write(&icon_path, ico)
         .unwrap_or_else(|error| panic!("failed to write {}: {error}", icon_path.display()));
@@ -36,6 +39,27 @@ fn main() {
             .compile()
             .expect("failed to compile AiSH Windows resources");
     }
+}
+
+fn generate_legacy_main(manifest_dir: &Path, out_dir: &Path) {
+    let source_path = manifest_dir.join("src/main_setup.rs");
+    println!("cargo:rerun-if-changed={}", source_path.display());
+
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", source_path.display()));
+    let generated = source
+        .replacen("mod logging;", "use crate::logging;", 1)
+        .replacen("mod setup;", "use crate::setup;", 1)
+        .replacen("mod updater;", "use crate::updater;", 1)
+        .replacen("fn main()", "pub fn run()", 1);
+
+    if !generated.contains("pub fn run()") {
+        panic!("failed to generate provider shell entrypoint");
+    }
+
+    let generated_path = out_dir.join("main_setup_generated.rs");
+    fs::write(&generated_path, generated)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", generated_path.display()));
 }
 
 fn png_to_single_image_ico(png: &[u8], source: &Path) -> Vec<u8> {
