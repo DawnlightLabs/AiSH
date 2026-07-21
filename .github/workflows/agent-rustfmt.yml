@@ -1,0 +1,38 @@
+name: Agent Rustfmt
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.head_ref == 'agent/fix-bundled-local-runtime'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format Rust changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          if git diff --quiet -- apps/provider-shell/build.rs apps/provider-shell/src/main.rs apps/provider-shell/src/runtime_bootstrap.rs; then
+            echo "Rust files are already formatted."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/provider-shell/build.rs apps/provider-shell/src/main.rs apps/provider-shell/src/runtime_bootstrap.rs
+          git commit -m "Format runtime bootstrap"
+          git push origin HEAD:${{ github.head_ref }}
