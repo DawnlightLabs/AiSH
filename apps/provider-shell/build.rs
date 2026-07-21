@@ -58,9 +58,8 @@ fn generate_legacy_main(manifest_dir: &Path, out_dir: &Path) {
     }
 
     let generated_path = out_dir.join("main_setup_generated.rs");
-    fs::write(&generated_path, generated).unwrap_or_else(|error| {
-        panic!("failed to write {}: {error}", generated_path.display())
-    });
+    fs::write(&generated_path, generated)
+        .unwrap_or_else(|error| panic!("failed to write {}: {error}", generated_path.display()));
 }
 
 fn png_to_single_image_ico(png: &[u8], source: &Path) -> Vec<u8> {

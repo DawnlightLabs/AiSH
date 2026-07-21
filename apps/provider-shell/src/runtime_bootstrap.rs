@@ -155,9 +155,8 @@ fn install_runtime_from_current_release(install_root: &Path) -> Result<(), Strin
     make_executable(&staged_dir.join(runtime_filename()))?;
 
     if target_dir.exists() {
-        fs::remove_dir_all(&target_dir).map_err(|error| {
-            format!("failed to replace {}: {error}", target_dir.display())
-        })?;
+        fs::remove_dir_all(&target_dir)
+            .map_err(|error| format!("failed to replace {}: {error}", target_dir.display()))?;
     }
     fs::rename(&staged_dir, &target_dir)
         .map_err(|error| format!("failed to install {}: {error}", target_dir.display()))?;
@@ -299,6 +298,8 @@ mod tests {
     #[test]
     fn preserves_non_legacy_paths() {
         assert!(!is_legacy_model_path(Path::new(r"D:\Models\custom.gguf")));
-        assert!(!is_legacy_runtime_path(Path::new(r"D:\Tools\llama-cli.exe")));
+        assert!(!is_legacy_runtime_path(Path::new(
+            r"D:\Tools\llama-cli.exe"
+        )));
     }
 }
