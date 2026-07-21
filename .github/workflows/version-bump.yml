@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "New version, for example 0.4.0"
+        description: "New or existing version, for example 0.4.0"
         required: true
         type: string
       make_latest:
@@ -41,6 +41,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      tag_exists: ${{ steps.version.outputs.tag_exists }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -62,14 +63,25 @@ jobs:
             echo "Version must look exactly like 0.4.0" >&2
             exit 1
           fi
-          if git rev-parse "v$version" >/dev/null 2>&1; then
-            echo "Tag v$version already exists" >&2
-            exit 1
+
+          tag="v$version"
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            tagged_version="$(git show "$tag:apps/provider-shell/Cargo.toml" | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -n1)"
+            if [[ "$tagged_version" != "$version" ]]; then
+              echo "Tag $tag contains provider version $tagged_version" >&2
+              exit 1
+            fi
+            echo "Tag $tag already exists; rebuilding and republishing its assets."
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
           fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Update package version
+        if: steps.version.outputs.tag_exists != 'true'
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -81,6 +93,7 @@ jobs:
           test "$actual" = "$VERSION"
 
       - name: Commit version and push tag
+        if: steps.version.outputs.tag_exists != 'true'
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
