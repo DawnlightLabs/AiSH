@@ -1,88 +1,300 @@
 name: CI
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  verify-actions-cleanup:
-    runs-on: ubuntu-22.04
+  cargo-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Verify and finish Actions cleanup
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo check --workspace
+      - run: cargo test -p aish-ai -p aish-provider -p aish-provider-shell
+
+  windows-lifecycle-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build provider shell
+        run: cargo build -p aish-provider-shell
+      - name: Verify staged installer copy
+        shell: pwsh
         run: |
-          set -euo pipefail
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $stagedRoot = Join-Path $env:RUNNER_TEMP 'AiSH staged install'
+          Remove-Item -LiteralPath $stagedRoot -Recurse -Force -ErrorAction SilentlyContinue
+          & $builtExe --install-headless --install-dir $stagedRoot --skip-model --no-add-path --no-set-model-path --no-windows-terminal --no-editor-profiles
+          if ($LASTEXITCODE -ne 0) { throw 'Staged provider setup failed.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $stagedRoot 'bin\aish.exe'))) {
+            throw 'Staged provider setup did not create the managed executable.'
+          }
+      - name: Verify Windows user environment persistence
+        shell: pwsh
+        run: |
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $stagedRoot = Join-Path $env:RUNNER_TEMP 'AiSH environment smoke with spaces'
+          $oldUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $oldModelPath = [Environment]::GetEnvironmentVariable('AISH_MODEL_PATH', 'User')
+          try {
+            [Environment]::SetEnvironmentVariable('Path', 'C:\Program Files\Node Test', 'User')
+            [Environment]::SetEnvironmentVariable('AISH_MODEL_PATH', $null, 'User')
+            & $builtExe --install-headless --install-dir $stagedRoot --skip-model --add-path --set-model-path --no-windows-terminal --no-editor-profiles
+            if ($LASTEXITCODE -ne 0) { throw 'Environment persistence setup failed.' }
+            $savedPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            $expectedBin = Join-Path $stagedRoot 'bin'
+            if (($savedPath -split ';') -notcontains $expectedBin) {
+              throw 'AiSH bin directory was not added to the user PATH.'
+            }
+            if ($savedPath -notmatch [regex]::Escape('C:\Program Files\Node Test')) {
+              throw 'Existing user PATH entries containing spaces were not preserved.'
+            }
+            $savedModel = [Environment]::GetEnvironmentVariable('AISH_MODEL_PATH', 'User')
+            if ([string]::IsNullOrWhiteSpace($savedModel)) {
+              throw 'AISH_MODEL_PATH was not persisted.'
+            }
+          } finally {
+            [Environment]::SetEnvironmentVariable('Path', $oldUserPath, 'User')
+            [Environment]::SetEnvironmentVariable('AISH_MODEL_PATH', $oldModelPath, 'User')
+          }
+      - name: Verify embedded Windows icon resource
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
 
-          repo="$GITHUB_REPOSITORY"
-          report="$RUNNER_TEMP/actions-cleanup-report.txt"
-          deleted_runs=0
+          public static class AiSHResourceCheck {
+              public delegate bool EnumResourceNameProc(
+                  IntPtr module,
+                  IntPtr type,
+                  IntPtr name,
+                  IntPtr parameter
+              );
 
-          keep_workflow() {
-            case "$1" in
-              .github/workflows/ci.yml|.github/workflows/version-bump.yml|.github/workflows/provider-release.yml|dynamic/*)
-                return 0
-                ;;
-              *)
-                return 1
-                ;;
-            esac
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr LoadLibraryEx(
+                  string fileName,
+                  IntPtr file,
+                  uint flags
+              );
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool EnumResourceNames(
+                  IntPtr module,
+                  IntPtr type,
+                  EnumResourceNameProc callback,
+                  IntPtr parameter
+              );
+
+              [DllImport("kernel32.dll")]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+
+          $module = [AiSHResourceCheck]::LoadLibraryEx($exe, [IntPtr]::Zero, 0x2)
+          if ($module -eq [IntPtr]::Zero) {
+            throw 'Could not open aish.exe as a Windows resource image.'
           }
 
-          while IFS=$'\t' read -r workflow_id workflow_name workflow_path workflow_state; do
-            if keep_workflow "$workflow_path"; then
-              continue
-            fi
+          try {
+            $script:foundIcon = $false
+            $callback = [AiSHResourceCheck+EnumResourceNameProc]{
+              param($moduleHandle, $resourceType, $resourceName, $parameter)
+              $script:foundIcon = $true
+              return $true
+            }
+            [AiSHResourceCheck]::EnumResourceNames(
+              $module,
+              [IntPtr]14,
+              $callback,
+              [IntPtr]::Zero
+            ) | Out-Null
+            if (-not $script:foundIcon) {
+              throw 'aish.exe does not contain an RT_GROUP_ICON resource.'
+            }
+          } finally {
+            [AiSHResourceCheck]::FreeLibrary($module) | Out-Null
+          }
+      - name: Verify updater archive argument transport
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'AiSH updater smoke with spaces'
+          $source = Join-Path $root 'source'
+          $archive = Join-Path $root 'aish test.zip'
+          $extract = Join-Path $root 'extract target'
+          New-Item -ItemType Directory -Force -Path $source, $extract | Out-Null
+          Set-Content -LiteralPath (Join-Path $source 'aish.exe') -Value 'smoke'
+          Compress-Archive -LiteralPath (Join-Path $source 'aish.exe') -DestinationPath $archive -Force
+          $env:AISH_UPDATE_ARCHIVE = $archive
+          $env:AISH_UPDATE_EXTRACT_DIR = $extract
+          powershell.exe -NoLogo -NoProfile -Command 'Expand-Archive -LiteralPath $env:AISH_UPDATE_ARCHIVE -DestinationPath $env:AISH_UPDATE_EXTRACT_DIR -Force'
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $extract 'aish.exe'))) {
+            throw 'Windows updater extraction smoke test failed.'
+          }
+      - name: Verify internal replacement helper
+        shell: pwsh
+        run: |
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $root = Join-Path $env:RUNNER_TEMP 'AiSH internal updater smoke'
+          $oldLocalAppData = $env:LOCALAPPDATA
+          try {
+            $env:LOCALAPPDATA = Join-Path $root 'Local App Data'
+            $target = Join-Path $env:LOCALAPPDATA 'AiSH\bin\aish.exe'
+            $helper = Join-Path $root 'aish-update.exe'
+            New-Item -ItemType Directory -Force -Path (Split-Path $target), (Split-Path $helper) | Out-Null
+            Copy-Item -LiteralPath $builtExe -Destination $target -Force
+            Copy-Item -LiteralPath $builtExe -Destination $helper -Force
+            [System.IO.File]::AppendAllText($target, 'stale-tail')
 
-            gh api --method PUT "/repos/$repo/actions/workflows/$workflow_id/disable" >/dev/null 2>&1 || true
+            $expected = (Select-String -Path 'apps/provider-shell/Cargo.toml' -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+            $state = Join-Path $env:LOCALAPPDATA 'AiSH\state'
+            New-Item -ItemType Directory -Force -Path $state | Out-Null
+            $pending = Join-Path $state 'update-pending'
+            $created = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+            Set-Content -LiteralPath $pending -Value "$expected`n$created" -NoNewline
 
-            mapfile -t run_ids < <(
-              gh api --paginate "/repos/$repo/actions/workflows/$workflow_id/runs?per_page=100" \
-                --jq '.workflow_runs[] | select(.status == "completed") | .id'
-            )
+            $guardOutput = '/exit' | & $target 2>&1 | Out-String
+            if ($guardOutput -notmatch 'still being applied') {
+              throw 'Pending update guard did not prevent the old executable from starting.'
+            }
 
-            for run_id in "${run_ids[@]}"; do
-              [[ -n "$run_id" ]] || continue
-              gh api --method DELETE "/repos/$repo/actions/runs/$run_id" >/dev/null 2>&1 || true
-              deleted_runs=$((deleted_runs + 1))
-            done
-          done < <(
-            gh api --paginate "/repos/$repo/actions/workflows?per_page=100" \
-              --jq '.workflows[] | [.id, .name, .path, .state] | @tsv'
+            & $helper --apply-update $target --expected-version $expected
+            if ($LASTEXITCODE -ne 0) { throw 'Internal update helper failed.' }
+
+            $sourceHash = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash
+            $targetHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+            if ($sourceHash -ne $targetHash) {
+              throw 'Internal update helper did not replace the target executable.'
+            }
+
+            $versionOutput = (& $target --version | Out-String).Trim()
+            if ($versionOutput -notmatch [regex]::Escape($expected)) {
+              throw "Updated executable reported the wrong version: $versionOutput"
+            }
+            if (Test-Path -LiteralPath $pending) {
+              throw 'Pending update marker was not cleared.'
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $state 'update-success'))) {
+              throw 'Update success marker was not written.'
+            }
+          } finally {
+            $env:LOCALAPPDATA = $oldLocalAppData
+          }
+      - name: Verify Windows branding and terminal settings repair
+        shell: pwsh
+        run: |
+          $builtExe = Join-Path $env:GITHUB_WORKSPACE 'target\debug\aish.exe'
+          $installRoot = Join-Path $env:LOCALAPPDATA 'AiSH'
+          $managedExe = Join-Path $installRoot 'bin\aish.exe'
+          New-Item -ItemType Directory -Force -Path (Split-Path $managedExe) | Out-Null
+          Copy-Item -LiteralPath $builtExe -Destination $managedExe -Force
+
+          $terminalSettings = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\settings.json'
+          New-Item -ItemType Directory -Force -Path (Split-Path $terminalSettings) | Out-Null
+          [System.IO.File]::WriteAllBytes($terminalSettings, [byte[]](0xEF, 0xBB, 0xBF))
+
+          $previewSettings = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json'
+          New-Item -ItemType Directory -Force -Path (Split-Path $previewSettings) | Out-Null
+          Set-Content -LiteralPath $previewSettings -Value '{broken-json' -NoNewline
+
+          & $managedExe --repair-install --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Registration repair failed.' }
+          if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AiSH')) {
+            throw 'Installed apps registration was not created.'
+          }
+
+          foreach ($settingsPath in @($terminalSettings, $previewSettings)) {
+            $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            $profile = $settings.profiles.list | Where-Object { $_.name -eq 'AiSH' } | Select-Object -First 1
+            if (-not $profile) { throw "Windows Terminal AiSH profile was not created in $settingsPath." }
+            if (-not $profile.icon -or -not (Test-Path -LiteralPath $profile.icon)) {
+              throw "Windows Terminal AiSH profile does not reference the installed logo in $settingsPath."
+            }
+          }
+          if (-not (Test-Path -LiteralPath "$previewSettings.aish-backup")) {
+            throw 'Malformed Windows Terminal settings were not backed up.'
+          }
+
+          $model = Join-Path $env:RUNNER_TEMP 'aish-ci-model.gguf'
+          $stream = [System.IO.File]::Open($model, [System.IO.FileMode]::Create)
+          try {
+            $stream.SetLength(16MB)
+            $magic = [System.Text.Encoding]::ASCII.GetBytes('GGUF')
+            $stream.Position = 0
+            $stream.Write($magic, 0, $magic.Length)
+          } finally {
+            $stream.Dispose()
+          }
+          $env:AISH_MODEL_PATH = $model
+          $env:AISH_SKIP_UPDATE_CHECK = '1'
+          $output = "/exit" | & $managedExe 2>&1 | Out-String
+          if ($output -match 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\AiSH') {
+            throw 'AiSH leaked the registry probe into terminal startup output.'
+          }
+          if ($output -notmatch 'AiSH provider shell') {
+            throw 'AiSH provider shell did not start successfully.'
+          }
+
+          & $managedExe --uninstall --yes
+          if ($LASTEXITCODE -ne 0) { throw 'Uninstall smoke test failed.' }
+
+  site-build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: apps/site
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+
+  powershell-syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $files = @(
+            'apps/site/public/install.ps1',
+            'apps/provider-shell/src/windows_register.ps1',
+            'apps/provider-shell/src/windows_uninstall.ps1'
           )
-
-          {
-            echo "AiSH Actions cleanup verification"
-            echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "Additional obsolete runs deleted in verification pass: $deleted_runs"
-            echo
-            printf '%-36s %-62s %-22s %s\n' "WORKFLOW" "PATH" "STATE" "RUNS"
-            printf '%-36s %-62s %-22s %s\n' "--------" "----" "-----" "----"
-
-            while IFS=$'\t' read -r workflow_id workflow_name workflow_path workflow_state; do
-              run_count="$(gh api "/repos/$repo/actions/workflows/$workflow_id/runs?per_page=1" --jq '.total_count')"
-              printf '%-36s %-62s %-22s %s\n' "$workflow_name" "$workflow_path" "$workflow_state" "$run_count"
-            done < <(
-              gh api --paginate "/repos/$repo/actions/workflows?per_page=100" \
-                --jq '.workflows[] | [.id, .name, .path, .state] | @tsv'
-            )
-          } | tee "$report"
-
-          encoded="$(base64 -w0 "$report")"
-          jq -n \
-            --arg message "Record Actions cleanup verification" \
-            --arg content "$encoded" \
-            --arg branch "main" \
-            '{message: $message, content: $content, branch: $branch}' \
-            > "$RUNNER_TEMP/report-payload.json"
-
-          gh api --method PUT \
-            "/repos/$repo/contents/.github/actions-cleanup-report.txt" \
-            --input "$RUNNER_TEMP/report-payload.json" \
-            >/dev/null
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
