@@ -81,7 +81,7 @@ fn is_legacy_model_path(path: &Path) -> bool {
 fn is_legacy_runtime_path(path: &Path) -> bool {
     let normalized = normalize_path(path);
     normalized.contains("/downloads/llama.cpp/")
-        && normalized.ends_with(&format!("/{}", runtime_filename().to_lowercase()))
+        && (normalized.ends_with("/llama-cli") || normalized.ends_with("/llama-cli.exe"))
 }
 
 fn normalize_path(path: &Path) -> String {
