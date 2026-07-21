@@ -600,6 +600,7 @@ fn is_high_confidence_command(first: &str) -> bool {
         "write-output",
         "clear",
         "cls",
+        "aish",
         "git",
         "gh",
         "npm",
@@ -820,6 +821,8 @@ mod tests {
         assert!(looks_like_command_attempt("git status"));
         assert!(looks_like_command_attempt("Get-ChildItem -Directory"));
         assert!(looks_like_command_attempt("go version"));
+        assert!(looks_like_command_attempt("aish --version"));
+        assert!(looks_like_command_attempt("aish -v"));
         assert!(looks_like_command_attempt(".\\tools\\build.ps1"));
     }
 

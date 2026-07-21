@@ -115,7 +115,7 @@ fn shell_family(os: &str, shell: &str) -> &'static str {
 }
 
 pub fn build_command_card_system_prompt() -> String {
-    "You are AiSH's local shell planner. Produce one command card for the user's current shell. Return exactly one JSON object with action_type, command, risk, reason, and fallback_message. action_type is shell_command or fallback_message; keep the inactive command or fallback field empty. Use only the supplied operating system, shell, current context, and user intent. The command must be directly runnable in that shell and must not invent paths, filenames, usernames, installed tools, or facts. Read-only work is low risk; state-changing work is medium or high risk. The host independently validates risk and approval. Keep the reason brief.".to_string()
+    "You are AiSH's local shell planner. Return exactly one compact JSON object with action_type, command, and fallback_message. For runnable work, use action_type shell_command, put one directly runnable command in command, and leave fallback_message empty. For a question or a request that cannot be converted into one safe command, use action_type fallback_message, leave command empty, and put the response in fallback_message. Use only the supplied operating system, shell, context, and user intent. Never invent paths, filenames, usernames, installed tools, or facts. Do not include markdown or extra text. The host classifies risk and handles approval.".to_string()
 }
 
 pub fn build_command_card_prompt(intent: &str, context_json: &serde_json::Value) -> String {
@@ -357,10 +357,14 @@ fn is_command_card_value(value: &serde_json::Value) -> bool {
             .get("action_type")
             .and_then(serde_json::Value::as_str),
         Some("shell_command" | "fallback_message")
-    ) && object.get("command").is_some()
-        && object.get("risk").is_some()
-        && object.get("reason").is_some()
-        && object.get("fallback_message").is_some()
+    ) && object
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+        && object
+            .get("fallback_message")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
 }
 
 fn strip_ansi(raw: &str) -> String {
@@ -401,6 +405,13 @@ mod tests {
     fn accepts_fenced_and_colored_strict_json() {
         let raw = format!("\u{1b}[36m```json\n{CARD}\n```\u{1b}[0m");
         assert_eq!(clean_model_output(&raw), CARD);
+    }
+
+    #[test]
+    fn accepts_compact_command_cards() {
+        let compact =
+            r#"{"action_type":"shell_command","command":"git status","fallback_message":""}"#;
+        assert_eq!(extract_command_card_json(compact).as_deref(), Some(compact));
     }
 
     #[test]

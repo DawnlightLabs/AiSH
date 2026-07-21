@@ -288,6 +288,18 @@ pub fn plan_failed_command_recovery(
 }
 
 fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
+    if let Some(command) = deterministic_command(input) {
+        return evaluate_generated_command(
+            input,
+            &command,
+            None,
+            Some("Resolved locally without invoking the model."),
+            request.surface,
+            None,
+            Some("local_intent".to_string()),
+        );
+    }
+
     let Some(profile) = request.profile else {
         return ProviderPlan {
             mode: ProviderInputMode::AiRun,
@@ -575,6 +587,77 @@ pub fn default_model_profile() -> ModelProfile {
     }
 }
 
+fn deterministic_command(input: &str) -> Option<String> {
+    let normalized = input
+        .trim()
+        .trim_end_matches(|value| value == '.' || value == '!')
+        .to_ascii_lowercase();
+
+    if matches!(
+        normalized.as_str(),
+        "aish -v"
+            | "aish --version"
+            | "aish version"
+            | "show aish version"
+            | "show the aish version"
+    ) {
+        return Some("aish --version".to_string());
+    }
+
+    let mut request = normalized.as_str();
+    if let Some(rest) = request.strip_prefix("please ") {
+        request = rest.trim();
+    }
+
+    let target = [
+        "go to ",
+        "navigate to ",
+        "change directory to ",
+        "switch to ",
+        "enter ",
+    ]
+    .iter()
+    .find_map(|prefix| request.strip_prefix(prefix))?
+    .trim()
+    .trim_start_matches("the ")
+    .trim_end_matches(" folder")
+    .trim_end_matches(" directory")
+    .trim();
+
+    let relative = match target {
+        "downloads" | "download" => Some("Downloads"),
+        "desktop" => Some("Desktop"),
+        "documents" | "document" | "docs" => Some("Documents"),
+        "home" | "user" => Some(""),
+        "parent" | "up" | "one level up" => {
+            return Some(if target_is_windows() {
+                "Set-Location ..".to_string()
+            } else {
+                "cd ..".to_string()
+            });
+        }
+        _ => None,
+    }?;
+
+    if target_is_windows() {
+        if relative.is_empty() {
+            Some("Set-Location \"$env:USERPROFILE\"".to_string())
+        } else {
+            Some(format!("Set-Location \"$env:USERPROFILE\\{relative}\""))
+        }
+    } else if relative.is_empty() {
+        Some("cd \"$HOME\"".to_string())
+    } else {
+        Some(format!("cd \"$HOME/{relative}\""))
+    }
+}
+
+fn target_is_windows() -> bool {
+    std::env::var("AISH_TARGET_OS")
+        .map(|value| value.eq_ignore_ascii_case("windows"))
+        .unwrap_or(std::env::consts::OS == "windows")
+}
+
 fn parse_model_risk(value: Option<&str>) -> RiskLevel {
     match value.unwrap_or("low").to_lowercase().as_str() {
         "high" => RiskLevel::High,
@@ -598,4 +681,39 @@ fn home_dir() -> PathBuf {
         .or_else(|_| std::env::var("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod local_intent_tests {
+    use super::deterministic_command;
+
+    #[test]
+    fn resolves_common_navigation_without_the_model() {
+        std::env::set_var("AISH_TARGET_OS", "windows");
+        assert_eq!(
+            deterministic_command("go to downloads").as_deref(),
+            Some("Set-Location \"$env:USERPROFILE\\Downloads\"")
+        );
+        assert_eq!(
+            deterministic_command("please navigate to the desktop folder").as_deref(),
+            Some("Set-Location \"$env:USERPROFILE\\Desktop\"")
+        );
+    }
+
+    #[test]
+    fn resolves_version_aliases_without_the_model() {
+        assert_eq!(
+            deterministic_command("aish -v").as_deref(),
+            Some("aish --version")
+        );
+        assert_eq!(
+            deterministic_command("aish --version").as_deref(),
+            Some("aish --version")
+        );
+    }
+
+    #[test]
+    fn leaves_general_language_for_the_model() {
+        assert!(deterministic_command("find large files in this project").is_none());
+    }
 }

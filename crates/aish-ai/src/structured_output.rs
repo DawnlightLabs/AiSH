@@ -5,20 +5,16 @@ pub(crate) const COMMAND_CARD_JSON_SCHEMA: &str = r#"{
   "properties": {
     "action_type": { "type": "string", "enum": ["shell_command", "fallback_message"] },
     "command": { "type": "string" },
-    "risk": { "type": "string", "enum": ["low", "medium", "high"] },
-    "reason": { "type": "string" },
     "fallback_message": { "type": "string" }
   },
-  "required": ["action_type", "command", "risk", "reason", "fallback_message"],
+  "required": ["action_type", "command", "fallback_message"],
   "additionalProperties": false
 }"#;
 
 pub(crate) const COMMAND_CARD_GBNF: &str = r#"
-root ::= "{" ws action-kv "," ws command-kv "," ws risk-kv "," ws reason-kv "," ws fallback-kv "}" ws
+root ::= "{" ws action-kv "," ws command-kv "," ws fallback-kv "}" ws
 action-kv ::= "\"action_type\"" ws ":" ws ("\"shell_command\"" | "\"fallback_message\"")
 command-kv ::= "\"command\"" ws ":" ws string
-risk-kv ::= "\"risk\"" ws ":" ws ("\"low\"" | "\"medium\"" | "\"high\"")
-reason-kv ::= "\"reason\"" ws ":" ws string
 fallback-kv ::= "\"fallback_message\"" ws ":" ws string
 string ::= "\"" char* "\""
 char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
@@ -98,18 +94,12 @@ mod tests {
         let schema: serde_json::Value =
             serde_json::from_str(COMMAND_CARD_JSON_SCHEMA).expect("valid JSON schema");
         assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["required"].as_array().map(Vec::len), Some(5));
+        assert_eq!(schema["required"].as_array().map(Vec::len), Some(3));
     }
 
     #[test]
     fn grammar_matches_schema_fields() {
-        for field in [
-            "action_type",
-            "command",
-            "risk",
-            "reason",
-            "fallback_message",
-        ] {
+        for field in ["action_type", "command", "fallback_message"] {
             assert!(COMMAND_CARD_GBNF.contains(field));
         }
     }

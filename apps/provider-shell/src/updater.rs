@@ -34,7 +34,10 @@ pub fn handle_update_args() -> bool {
         return true;
     }
 
-    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+    if args
+        .iter()
+        .any(|arg| arg == "--version" || arg == "-V" || arg == "-v")
+    {
         print_version();
         return true;
     }
