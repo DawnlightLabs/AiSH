@@ -194,6 +194,12 @@ fn validate_shell_command_dialect_for(command: &str, family: &str) -> Result<(),
                 .to_string(),
         );
     }
+    if family == "powershell" && contains_cmd_only_file_creation(command) {
+        return Err(
+            "PowerShell plans must use New-Item or Set-Content rather than CMD-only NUL or echo-dot file creation."
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -229,6 +235,21 @@ fn contains_posix_flags_on_powershell_alias(command: &str) -> bool {
                     && option[1..].chars().all(|ch| ch.is_ascii_alphabetic())
                     && option.len() <= 4
             })
+    })
+}
+
+fn contains_cmd_only_file_creation(command: &str) -> bool {
+    command.split(['|', ';', '&']).any(|segment| {
+        let normalized = segment.trim().to_ascii_lowercase();
+        let tokens = normalized.split_whitespace().collect::<Vec<_>>();
+        matches!(
+            tokens.as_slice(),
+            [program, device, rest @ ..]
+                if (*program == "type" && *device == "nul"
+                    && rest.iter().any(|token| token.contains('>')))
+                    || (*program == "copy" && *device == "nul")
+        ) || normalized.starts_with("echo.>")
+            || normalized.starts_with("echo. >")
     })
 }
 
@@ -798,6 +819,14 @@ Return JSON."#;
         assert!(validate_shell_command_dialect_for("test -f package.json", "posix").is_ok());
         assert!(validate_shell_command_dialect_for("test -f package.json", "powershell").is_err());
         assert!(validate_shell_command_dialect_for("Get-ChildItem -Force", "powershell").is_ok());
+        assert!(validate_shell_command_dialect_for("type nul > sample.txt", "powershell").is_err());
+        assert!(validate_shell_command_dialect_for("copy nul sample.txt", "powershell").is_err());
+        assert!(validate_shell_command_dialect_for("echo. > sample.txt", "powershell").is_err());
+        assert!(validate_shell_command_dialect_for(
+            "New-Item -ItemType File -Path sample.txt",
+            "powershell"
+        )
+        .is_ok());
         assert!(validate_shell_command_dialect_for("ls -l | sort -h", "powershell").is_err());
         assert!(validate_shell_command_dialect_for("git -C . status", "powershell").is_ok());
         assert!(validate_shell_command_dialect_for(
