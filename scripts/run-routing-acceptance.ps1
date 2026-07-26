@@ -282,6 +282,14 @@ $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutputPath -Encodi
 Write-Host "Routing acceptance: $passedCount/$($results.Count) passed in $($stopwatch.ElapsedMilliseconds) ms."
 Write-Host "Report: $((Resolve-Path -LiteralPath $OutputPath).Path)"
 
+if ($failedCount -ne 0) {
+    Write-Host "First routing mismatches:"
+    @($results | Where-Object { -not $_.passed } | Select-Object -First 20) |
+        ForEach-Object {
+            Write-Host "  $($_.id) [$($_.category)] expected=$($_.expected_route) actual=$($_.actual_route) input=$($_.input)"
+        }
+}
+
 if ($process.ExitCode -ne 0 -or $failedCount -ne 0 -or $outputLines.Count -ne $cases.Count) {
     exit 1
 }
