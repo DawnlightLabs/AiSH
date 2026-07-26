@@ -104,7 +104,7 @@ for ($index = 0; $index -lt 500; $index++) {
         0 { "go to the routing fixture folder $index" }
         1 { "navigate to the nearest directory named build-$index" }
         2 { "enter the project folder called sample-$index" }
-        3 { "move one directory up from location $index" }
+        3 { "move one directory up" }
         4 { "open the folder containing manifest-$index.json" }
         5 { "switch into the nested workspace number $index" }
     }

@@ -13,7 +13,45 @@ pub enum NavigationResolution {
     Missing(String),
 }
 
+pub fn infer_direct_child_from_request(request: &str, root: &Path) -> Option<PathBuf> {
+    let mut matches = fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (path.is_dir() && name.chars().count() >= 2 && request_contains_name(request, &name))
+                .then_some(path)
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|path| {
+        std::cmp::Reverse(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.chars().count())
+                .unwrap_or_default(),
+        )
+    });
+    let longest = matches
+        .first()?
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.chars().count())?;
+    let longest_matches = matches
+        .into_iter()
+        .take_while(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.chars().count() == longest)
+        })
+        .collect::<Vec<_>>();
+    (longest_matches.len() == 1).then(|| longest_matches[0].clone())
+}
+
 pub fn infer_existing_target_from_request(request: &str, cwd: &Path) -> Option<String> {
+    if let Some(directory) = infer_containing_directory_from_request(request, cwd) {
+        return Some(directory.display().to_string());
+    }
     let mut queue = VecDeque::from([(cwd.to_path_buf(), 0_usize)]);
     let mut visited = 0_usize;
     let mut names = Vec::new();
@@ -163,12 +201,94 @@ pub fn resolve_navigation_target(
 fn request_contains_name(request: &str, name: &str) -> bool {
     let request = request.to_lowercase();
     let name = name.to_lowercase();
+    let first_word = request
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|character: char| !character.is_alphanumeric());
+    let skip_leading_word =
+        first_word.eq_ignore_ascii_case(&name) && request.split_whitespace().nth(1).is_some();
     request.match_indices(&name).any(|(start, matched)| {
         let before = request[..start].chars().next_back();
         let after = request[start + matched.len()..].chars().next();
-        before.map_or(true, |character| !character.is_alphanumeric())
+        let is_leading_word = skip_leading_word
+            && request[..start]
+                .chars()
+                .all(|character| !character.is_alphanumeric());
+        !is_leading_word
+            && before.map_or(true, |character| !character.is_alphanumeric())
             && after.map_or(true, |character| !character.is_alphanumeric())
     })
+}
+
+fn infer_containing_directory_from_request(request: &str, cwd: &Path) -> Option<PathBuf> {
+    let file_name = request
+        .split_whitespace()
+        .map(|word| {
+            word.trim_matches(|character: char| {
+                matches!(
+                    character,
+                    '\'' | '"' | '`' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+            })
+        })
+        .find(|word| {
+            !word.contains("://")
+                && Path::new(word)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.contains('.') && !value.starts_with('.'))
+        })?;
+    let requested_name = Path::new(file_name).file_name()?.to_string_lossy();
+
+    for ancestor in cwd.ancestors() {
+        let candidate = ancestor.join(requested_name.as_ref());
+        if candidate.is_file() {
+            return Some(fs::canonicalize(ancestor).unwrap_or_else(|_| ancestor.to_path_buf()));
+        }
+    }
+
+    let mut queue = VecDeque::from([(cwd.to_path_buf(), 0_usize)]);
+    let mut visited = 0_usize;
+    let mut found_depth = None;
+    let mut matches = Vec::new();
+    while let Some((directory, depth)) = queue.pop_front() {
+        if visited >= MAX_VISITED
+            || depth > MAX_DEPTH
+            || found_depth.is_some_and(|value| depth > value)
+        {
+            break;
+        }
+        visited += 1;
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let matches_name = if case_insensitive_platform() {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(&requested_name)
+                } else {
+                    entry.file_name().to_string_lossy() == requested_name
+                };
+                if matches_name {
+                    found_depth.get_or_insert(depth);
+                    if let Some(parent) = path.parent() {
+                        push_unique(
+                            &mut matches,
+                            fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf()),
+                        );
+                    }
+                }
+            } else if path.is_dir() && depth < MAX_DEPTH && found_depth.is_none() {
+                queue.push_back((path, depth + 1));
+            }
+        }
+    }
+    (matches.len() == 1).then(|| matches.remove(0))
 }
 
 fn push_unique_name(names: &mut Vec<String>, candidate: String) {
@@ -496,6 +616,18 @@ mod tests {
     }
 
     #[test]
+    fn infers_an_arbitrary_direct_child_named_in_the_request() {
+        let root = temp_root();
+        let target = root.join("Aurora Shelf 8f31");
+        fs::create_dir_all(&target).unwrap();
+        assert_eq!(
+            infer_direct_child_from_request("go to the Aurora Shelf 8f31 folder", &root),
+            Some(target)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn reports_ambiguity_and_missing_without_inventing_paths() {
         let root = temp_root();
         fs::create_dir_all(root.join("one").join("artifact-zone")).unwrap();
@@ -607,6 +739,56 @@ mod tests {
         assert_eq!(
             infer_existing_target_from_request("navigate to \"Work Area 8f31\"", &root).as_deref(),
             Some("Work Area 8f31")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn does_not_turn_the_leading_navigation_word_into_the_target() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("nested").join("go")).unwrap();
+        assert_eq!(
+            infer_existing_target_from_request("go to the crates folder", &root),
+            None
+        );
+        assert_eq!(
+            infer_existing_target_from_request("go to go", &root).as_deref(),
+            Some("go")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn infers_the_nearest_unique_directory_containing_a_named_file() {
+        let root = temp_root();
+        let project = root.join("project");
+        let cwd = project.join("nested").join("src");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(project.join("Fixture-8f31.toml"), "fixture").unwrap();
+
+        let inferred = infer_existing_target_from_request(
+            "open the folder containing Fixture-8f31.toml",
+            &cwd,
+        )
+        .unwrap();
+        assert_eq!(PathBuf::from(inferred), fs::canonicalize(&project).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn does_not_choose_between_equally_near_file_containers() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("left")).unwrap();
+        fs::create_dir_all(root.join("right")).unwrap();
+        fs::write(root.join("left").join("Fixture-8f31.json"), "{}").unwrap();
+        fs::write(root.join("right").join("Fixture-8f31.json"), "{}").unwrap();
+
+        assert_eq!(
+            infer_existing_target_from_request(
+                "open the folder containing Fixture-8f31.json",
+                &root,
+            ),
+            None
         );
         fs::remove_dir_all(root).unwrap();
     }

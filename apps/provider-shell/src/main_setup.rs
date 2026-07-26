@@ -45,6 +45,7 @@ struct CommandOutcome {
     success: bool,
     exit_code: Option<i32>,
     stderr: String,
+    had_output: bool,
 }
 
 fn main() {
@@ -514,6 +515,7 @@ fn approve_pending(state: &mut ProviderState) {
         println!("approved: {} ({})", pending.command, pending.risk);
         println!("reason: {}", pending.reason);
         let outcome = run_shell_command(&pending.command);
+        print_empty_outcome(&outcome);
         logging::record_command(
             pending.intent.as_deref(),
             Some(&pending.command),
@@ -689,6 +691,7 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
             };
 
             let outcome = run_shell_command(command);
+            print_empty_outcome(&outcome);
             logging::record_command(
                 Some(&plan.intent),
                 Some(command),
@@ -736,6 +739,7 @@ fn provider_context(state: &ProviderState) -> serde_json::Value {
 
 fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
     let outcome = run_shell_command(command);
+    print_empty_success(&outcome);
     logging::record_command(
         None,
         Some(command),
@@ -824,6 +828,9 @@ fn has_natural_language_connectors(words: &[&str]) -> bool {
                 | "my"
                 | "our"
                 | "here"
+                | "one"
+                | "every"
+                | "all"
                 | "which"
                 | "what"
                 | "why"
@@ -892,23 +899,33 @@ fn run_shell_command(command: &str) -> CommandOutcome {
             success: ok,
             exit_code: Some(if ok { 0 } else { 1 }),
             stderr: String::new(),
+            had_output: false,
         };
     }
-    let output = if env::consts::OS == "windows" {
-        Command::new("powershell.exe")
-            .args(["-NoLogo", "-NoProfile", "-Command", command])
-            .output()
+    let mut process = if env::consts::OS == "windows" {
+        let mut process = Command::new("powershell.exe");
+        process.args(["-NoLogo", "-NoProfile", "-Command", command]);
+        process
     } else {
-        Command::new(shell_path()).args(["-lc", command]).output()
+        let mut process = Command::new(shell_path());
+        process.args(["-lc", command]);
+        process
     };
+    if let Ok(cwd) = env::current_dir() {
+        process.current_dir(child_working_directory(&cwd));
+    };
+    let output = process.output();
     match output {
         Ok(output) => {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            print!("{stdout}");
+            eprint!("{stderr}");
             CommandOutcome {
                 success: output.status.success(),
                 exit_code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).chars().take(4000).collect(),
+                stderr: stderr.chars().take(4000).collect(),
+                had_output: !stdout.trim().is_empty() || !stderr.trim().is_empty(),
             }
         }
         Err(error) => {
@@ -917,8 +934,28 @@ fn run_shell_command(command: &str) -> CommandOutcome {
                 success: false,
                 exit_code: None,
                 stderr: error.to_string(),
+                had_output: true,
             }
         }
+    }
+}
+
+fn print_empty_success(outcome: &CommandOutcome) {
+    if outcome.success && !outcome.had_output {
+        println!("Command completed successfully; it returned no output.");
+    }
+}
+
+fn print_empty_outcome(outcome: &CommandOutcome) {
+    if outcome.had_output {
+        return;
+    }
+    if outcome.success {
+        print_empty_success(outcome);
+    } else if let Some(exit_code) = outcome.exit_code {
+        println!("Command returned no output and exited with code {exit_code}.");
+    } else {
+        println!("Command failed without returning output.");
     }
 }
 
@@ -1013,6 +1050,10 @@ fn user_facing_path(path: &Path) -> PathBuf {
     PathBuf::from(strip_windows_verbatim_path(&path.to_string_lossy()))
 }
 
+fn child_working_directory(path: &Path) -> PathBuf {
+    user_facing_path(path)
+}
+
 fn strip_windows_verbatim_path(path: &str) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
@@ -1063,9 +1104,9 @@ fn unquote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_shell_input_with, cli_arg_value, expand_shell_path,
-        looks_like_command_attempt_with, strip_windows_verbatim_path, ProviderInputMode,
-        ShellInputRoute,
+        child_working_directory, classify_shell_input_with, cli_arg_value, expand_shell_path,
+        looks_like_command_attempt_with, run_shell_command, strip_windows_verbatim_path,
+        ProviderInputMode, ShellInputRoute,
     };
 
     fn test_command_lookup(command: &str) -> bool {
@@ -1136,6 +1177,7 @@ mod tests {
             "go to the nearest folder",
             "find large files in this project",
             "open the folder containing manifest.json",
+            "move one directory up",
         ] {
             assert_eq!(
                 classify_shell_input_with(input, &ProviderInputMode::AiRun, test_command_lookup),
@@ -1172,6 +1214,31 @@ mod tests {
             strip_windows_verbatim_path(r"D:\workspace\crates"),
             r"D:\workspace\crates"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn child_processes_receive_a_drive_path_instead_of_a_verbatim_path() {
+        assert_eq!(
+            child_working_directory(std::path::Path::new(r"\\?\D:\workspace\crates")),
+            std::path::PathBuf::from(r"D:\workspace\crates")
+        );
+    }
+
+    #[test]
+    fn detects_successful_commands_that_return_no_output() {
+        let command = if cfg!(windows) { "exit 0" } else { "true" };
+        let outcome = run_shell_command(command);
+        assert!(outcome.success);
+        assert!(!outcome.had_output);
+    }
+
+    #[test]
+    fn detects_failed_commands_that_return_no_output() {
+        let outcome = run_shell_command("exit 7");
+        assert!(!outcome.success);
+        assert_eq!(outcome.exit_code, Some(7));
+        assert!(!outcome.had_output);
     }
 
     #[test]

@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 mod navigation;
 pub use navigation::{
-    infer_existing_target_from_request, resolve_navigation_target, NavigationResolution,
+    infer_direct_child_from_request, infer_existing_target_from_request, resolve_navigation_target,
+    NavigationResolution,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -603,6 +604,10 @@ fn ground_navigation_plan(plan: &mut SemanticPlan, input: &str, context: &serde_
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
+    let home = home_dir();
+    if ground_direct_home_target(plan, input, &cwd, &home) {
+        return;
+    }
     let Some(inferred) = infer_existing_target_from_request(input, &cwd) else {
         return;
     };
@@ -642,6 +647,40 @@ fn ground_navigation_plan(plan: &mut SemanticPlan, input: &str, context: &serde_
     }
     plan.target = Some(inferred);
     plan.scope = Some("current".to_string());
+}
+
+fn ground_direct_home_target(
+    plan: &mut SemanticPlan,
+    input: &str,
+    cwd: &Path,
+    home: &Path,
+) -> bool {
+    if plan.kind == SemanticPlanKind::ChangeDirectory
+        && !navigation_request_has_explicit_search_scope(input)
+        && plan
+            .scope
+            .as_deref()
+            .is_none_or(|scope| !navigation_target_is_grounded(scope, input))
+        && infer_direct_child_from_request(input, &cwd).is_none()
+    {
+        if let Some(home_target) = infer_direct_child_from_request(input, &home) {
+            plan.target = Some(home_target.display().to_string());
+            plan.scope = Some("home".to_string());
+            return true;
+        }
+    }
+    false
+}
+
+fn navigation_request_has_explicit_search_scope(input: &str) -> bool {
+    input.split_whitespace().any(|word| {
+        matches!(
+            word.trim_matches(|character: char| !character.is_alphanumeric())
+                .to_ascii_lowercase()
+                .as_str(),
+            "here" | "current" | "project" | "nearest" | "closest" | "nearby"
+        )
+    })
 }
 
 fn is_navigation_shell_command(command: &str) -> bool {
@@ -695,6 +734,18 @@ fn validate_model_plan(
                     )
                 };
             }
+            if let Some(target) = explicitly_named_target(input) {
+                if !command_preserves_explicit_target(command, &target) {
+                    return Err(format!(
+                        "The generated command must preserve the explicitly named target '{target}' exactly instead of substituting another identifier."
+                    ));
+                }
+                if command_uses_named_target_as_numeric_identifier(command, &target) {
+                    return Err(format!(
+                        "The explicitly named target '{target}' must use a name or image selector, never a PID or numeric ID selector."
+                    ));
+                }
+            }
             if classify_risk(command).risk == RiskLevel::Low
                 && command_references_nonexistent_absolute_path(command)
             {
@@ -729,7 +780,9 @@ fn validate_model_plan(
                     "A file-oriented request cannot be a change_directory action.".to_string(),
                 );
             }
-            if !navigation_target_is_grounded(target, input) {
+            if !navigation_target_is_grounded(target, input)
+                && !navigation_target_matches_host_inference(target, input, context)
+            {
                 return Err(
                     "The directory target was not grounded in the user's request; preserve the requested target exactly."
                         .to_string(),
@@ -758,6 +811,57 @@ fn validate_model_plan(
         }
     }
     Ok(())
+}
+
+fn explicitly_named_target(input: &str) -> Option<String> {
+    let words = input.split_whitespace().collect::<Vec<_>>();
+    words.windows(2).find_map(|pair| {
+        matches!(
+            pair[0]
+                .trim_matches(|character: char| !character.is_alphanumeric())
+                .to_ascii_lowercase()
+                .as_str(),
+            "named" | "called"
+        )
+        .then(|| {
+            pair[1]
+                .trim_matches(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, '\'' | '"' | ',' | ';' | ':' | '(' | ')')
+                })
+                .to_string()
+        })
+        .filter(|target| !target.is_empty())
+    })
+}
+
+fn command_preserves_explicit_target(command: &str, target: &str) -> bool {
+    if cfg!(windows) {
+        command.to_lowercase().contains(&target.to_lowercase())
+    } else {
+        command.contains(target)
+    }
+}
+
+fn command_uses_named_target_as_numeric_identifier(command: &str, target: &str) -> bool {
+    let tokens = command
+        .split_whitespace()
+        .map(|token| token.trim_matches(['\'', '"']).to_string())
+        .collect::<Vec<_>>();
+    let target_matches = |token: &str| {
+        let token = token.trim_matches(['\'', '"']);
+        if cfg!(windows) {
+            token.eq_ignore_ascii_case(target)
+        } else {
+            token == target
+        }
+    };
+    tokens.windows(2).any(|pair| {
+        matches!(
+            pair[0].to_ascii_lowercase().as_str(),
+            "/pid" | "--pid" | "-id"
+        ) && target_matches(&pair[1])
+    })
 }
 
 fn command_references_nonexistent_absolute_path(command: &str) -> bool {
@@ -983,6 +1087,21 @@ fn navigation_target_is_grounded(target: &str, input: &str) -> bool {
         .is_some_and(|name| input.contains(name))
 }
 
+fn navigation_target_matches_host_inference(
+    target: &str,
+    input: &str,
+    context: &serde_json::Value,
+) -> bool {
+    let cwd = context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    infer_existing_target_from_request(input, &cwd)
+        .is_some_and(|inferred| PathBuf::from(inferred) == PathBuf::from(target))
+}
+
 fn has_unresolved_reference(input: &str, context: &serde_json::Value) -> bool {
     let raw_words = input
         .split(|ch: char| !ch.is_alphanumeric())
@@ -1033,11 +1152,24 @@ fn has_unresolved_reference(input: &str, context: &serde_json::Value) -> bool {
                         | "permissions"
                 )
             })
+            && !has_postnominal_descriptor(&words, index + 1)
         {
             return true;
         }
     }
     false
+}
+
+fn has_postnominal_descriptor(words: &[String], noun_index: usize) -> bool {
+    let Some(relation) = words.get(noun_index + 1) else {
+        return false;
+    };
+    let required_tail = match relation.as_str() {
+        "named" | "called" | "matching" => 1,
+        "with" | "using" | "on" | "at" | "for" | "containing" => 2,
+        _ => return false,
+    };
+    words.len() > noun_index + 1 + required_tail
 }
 
 fn has_explicit_antecedent(raw_words: &[&str], words: &[String], pronoun_index: usize) -> bool {
@@ -1189,7 +1321,7 @@ fn semantic_to_provider_plan(
                     let choices = paths
                         .iter()
                         .take(5)
-                        .map(|path| path.display().to_string())
+                        .map(|path| user_visible_path(path))
                         .collect::<Vec<_>>()
                         .join(", ");
                     response_plan(input, surface, format!("I found multiple matching directories: {choices}. Which one should I open?"), model_output, runtime, diagnostics)
@@ -1212,6 +1344,20 @@ fn semantic_to_provider_plan(
                 diagnostics,
             )
         }
+    }
+}
+
+fn user_visible_path(path: &Path) -> String {
+    let rendered = path.display().to_string();
+    if !cfg!(windows) {
+        return rendered;
+    }
+    if let Some(rest) = rendered.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = rendered.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        rendered
     }
 }
 
@@ -1732,6 +1878,49 @@ mod planner_tests {
     }
 
     #[test]
+    fn named_process_is_resolved_but_cannot_be_replaced_by_a_numeric_suffix() {
+        let context = serde_json::json!({});
+        let target = "definitely-not-running-8427";
+        assert!(!has_unresolved_reference(
+            "kill the process named definitely-not-running-8427",
+            &context,
+        ));
+        assert!(has_unresolved_reference("kill the process", &context));
+        assert!(!command_preserves_explicit_target(
+            "taskkill /PID 8427 /F",
+            target,
+        ));
+        assert!(command_uses_named_target_as_numeric_identifier(
+            "taskkill /PID definitely-not-running-8427 /F",
+            target,
+        ));
+        assert!(!command_uses_named_target_as_numeric_identifier(
+            "taskkill /IM definitely-not-running-8427 /F",
+            target,
+        ));
+
+        let repaired = if cfg!(windows) {
+            r#"{"kind":"shell_command","payload":"taskkill /F /IM definitely-not-running-8427.exe"}"#
+        } else {
+            r#"{"kind":"shell_command","payload":"pkill -x definitely-not-running-8427"}"#
+        };
+        let plan = plan_from_input(
+            "kill the process named definitely-not-running-8427",
+            &[
+                r#"{"kind":"shell_command","payload":"taskkill /PID definitely-not-running-8427 /F"}"#,
+                repaired,
+            ],
+            context,
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert!(plan
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains("definitely-not-running-8427")));
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 1);
+    }
+
+    #[test]
     fn question_shaped_answer_is_repaired_to_an_explanation() {
         let plan = plan_from_input(
             "explain why access can be denied",
@@ -1903,6 +2092,25 @@ mod planner_tests {
         assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 1);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn cmd_only_empty_file_creation_is_repaired_before_approval() {
+        let plan = plan_from_input(
+            "create an empty file named Fixture-8f31.txt",
+            &[
+                r#"{"kind":"shell_command","payload":"type nul > Fixture-8f31.txt"}"#,
+                r#"{"kind":"shell_command","payload":"New-Item -ItemType File -Path 'Fixture-8f31.txt'"}"#,
+            ],
+            serde_json::json!({}),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert_eq!(
+            plan.command.as_deref(),
+            Some("New-Item -ItemType File -Path 'Fixture-8f31.txt'")
+        );
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 1);
+    }
+
     #[test]
     fn cmd_recursion_is_repaired_unless_the_request_explicitly_includes_it() {
         let repaired = plan_from_input(
@@ -1989,7 +2197,7 @@ mod planner_tests {
         assert!(!low.needs_approval);
 
         let risky = plan_from_input(
-            "delete the named file",
+            "delete the file named important.txt",
             &[r#"{"kind":"shell_command","payload":"del /q important.txt"}"#],
             serde_json::json!({}),
         );
@@ -2205,6 +2413,101 @@ mod planner_tests {
         assert!(plan.command.is_none());
         assert!(plan.reason.contains("multiple matching directories"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn leading_navigation_word_cannot_replace_the_requested_target() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-leading-navigation-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("nested").join("go")).unwrap();
+        let plan = plan_from_input(
+            "go to the crates folder",
+            &[r#"{"kind":"change_directory","target":"crates","scope":"current"}"#],
+            serde_json::json!({ "cwd": root.clone() }),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::Fallback);
+        assert!(plan.reason.contains("crates"));
+        assert!(!plan.reason.contains("multiple matching directories"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn direct_home_child_precedes_a_deep_current_tree_match() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-home-priority-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cwd = root.join("workspace");
+        let home = root.join("home");
+        let name = "Aurora Shelf 8f31";
+        fs::create_dir_all(cwd.join("nested").join(name)).unwrap();
+        fs::create_dir_all(home.join(name)).unwrap();
+        let mut semantic: SemanticPlan = serde_json::from_str(&format!(
+            r#"{{"kind":"change_directory","target":"{name}","scope":"current"}}"#
+        ))
+        .unwrap();
+        assert!(ground_direct_home_target(
+            &mut semantic,
+            &format!("go to the {name} folder"),
+            &cwd,
+            &home,
+        ));
+        assert_eq!(
+            semantic.target.as_deref().map(PathBuf::from),
+            Some(home.join(name)),
+        );
+        assert_eq!(semantic.scope.as_deref(), Some("home"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn containing_file_request_resolves_to_the_existing_ancestor() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-containing-file-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let project = root.join("project");
+        let cwd = project.join("nested").join("src");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(project.join("Fixture-8f31.toml"), "fixture").unwrap();
+        let plan = plan_from_input(
+            "open the folder containing Fixture-8f31.toml",
+            &[r#"{"kind":"change_directory","target":"Fixture-8f31.toml"}"#],
+            serde_json::json!({ "cwd": cwd }),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ChangeDirectory);
+        assert_eq!(
+            plan.target.map(PathBuf::from),
+            Some(fs::canonicalize(&project).unwrap())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ambiguous_navigation_paths_hide_windows_verbatim_prefixes() {
+        assert_eq!(
+            user_visible_path(Path::new(r"\\?\C:\workspace\fixture")),
+            r"C:\workspace\fixture"
+        );
+        assert_eq!(
+            user_visible_path(Path::new(r"\\?\UNC\server\share\fixture")),
+            r"\\server\share\fixture"
+        );
     }
 
     #[test]
