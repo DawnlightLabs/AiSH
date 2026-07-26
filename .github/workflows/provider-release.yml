@@ -67,27 +67,32 @@ jobs:
             os: windows-latest
             artifact: aish-windows-x64.zip
             bin: target/release/aish.exe
-            llama_asset: llama-b10075-bin-win-cpu-x64.zip
+            llama_asset: llama-b10075-bin-win-vulkan-x64.zip
+            runtime_backend: vulkan
           - name: windows-arm64
             os: windows-11-arm
             artifact: aish-windows-arm64.zip
             bin: target/release/aish.exe
             llama_asset: llama-b10075-bin-win-cpu-arm64.zip
+            runtime_backend: cpu
           - name: macos-arm64
             os: macos-14
             artifact: aish-macos-arm64.tar.gz
             bin: target/release/aish
             llama_asset: llama-b10075-bin-macos-arm64.tar.gz
+            runtime_backend: metal
           - name: linux-x64
             os: ubuntu-22.04
             artifact: aish-linux-x64.tar.gz
             bin: target/release/aish
-            llama_asset: llama-b10075-bin-ubuntu-x64.tar.gz
+            llama_asset: llama-b10075-bin-ubuntu-vulkan-x64.tar.gz
+            runtime_backend: vulkan
           - name: linux-arm64
             os: ubuntu-24.04-arm
             artifact: aish-linux-arm64.tar.gz
             bin: target/release/aish
-            llama_asset: llama-b10075-bin-ubuntu-arm64.tar.gz
+            llama_asset: llama-b10075-bin-ubuntu-vulkan-arm64.tar.gz
+            runtime_backend: vulkan
 
     steps:
       - uses: actions/checkout@v5
@@ -166,6 +171,8 @@ jobs:
           Copy-Item -Path (Join-Path $cli.Directory.FullName '*') -Destination dist/runtime -Recurse -Force
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ggml-org/llama.cpp/$env:LLAMA_CPP_RELEASE/LICENSE" -OutFile dist/runtime/llama.cpp-LICENSE -UseBasicParsing
           if (-not (Test-Path dist/runtime/llama-cli.exe)) { throw 'Bundled runtime is incomplete.' }
+          if ('${{ matrix.runtime_backend }}' -eq 'vulkan' -and -not (Get-ChildItem dist/runtime -Filter '*vulkan*' -Recurse -File)) { throw 'Bundled runtime is missing its Vulkan backend.' }
+          Set-Content -LiteralPath dist/runtime/backend.txt -Value '${{ matrix.runtime_backend }}' -NoNewline
 
       - name: Bundle llama.cpp runtime on Unix
         if: runner.os != 'Windows'
@@ -188,6 +195,10 @@ jobs:
             "https://raw.githubusercontent.com/ggml-org/llama.cpp/$LLAMA_CPP_RELEASE/LICENSE" \
             --output dist/runtime/llama.cpp-LICENSE
           test -x dist/runtime/llama-cli
+          if [ '${{ matrix.runtime_backend }}' = 'vulkan' ]; then
+            find dist/runtime -type f -iname '*vulkan*' -print -quit | grep -q . || { echo 'Bundled runtime is missing its Vulkan backend.' >&2; exit 1; }
+          fi
+          printf '%s' '${{ matrix.runtime_backend }}' > dist/runtime/backend.txt
 
       - name: Package Windows
         if: runner.os == 'Windows'

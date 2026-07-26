@@ -14,12 +14,87 @@ pub fn configure() {
     env::set_var("AISH_MODEL_PATH", &model_path);
 
     let runtime_path = configured_runtime_path(&install_root);
-    if !runtime_path.is_file() && is_managed_runtime_path(&runtime_path, &install_root) {
+    let compatibility = inspect_runtime_compatibility(&runtime_path);
+    if compatibility.is_err() && is_managed_runtime_path(&runtime_path, &install_root) {
         if let Err(error) = install_runtime_from_current_release(&install_root) {
-            eprintln!("AiSH runtime setup warning: {error}");
+            eprintln!("AiSH managed runtime repair failed: {error}");
+        } else if let Err(error) = inspect_runtime_compatibility(&runtime_path) {
+            eprintln!("AiSH managed runtime remains incompatible after repair: {error}");
         }
+    } else if let Err(error) = compatibility {
+        eprintln!(
+            "AiSH custom runtime is incompatible: {error} Set AISH_LLAMA_CLI to a compatible llama-cli or remove the override and run setup."
+        );
     }
     env::set_var("AISH_LLAMA_CLI", &runtime_path);
+}
+
+fn inspect_runtime_compatibility(runtime_path: &Path) -> Result<(), String> {
+    if !runtime_path.is_file() {
+        return Err(format!(
+            "llama-cli is missing at {}.",
+            runtime_path.display()
+        ));
+    }
+    let output = Command::new(runtime_path)
+        .arg("--help")
+        .output()
+        .map_err(|error| format!("llama-cli could not start: {error}."))?;
+    if !output.status.success() {
+        return Err(format!(
+            "llama-cli --help exited with {}.",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    let help = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    validate_runtime_help(&help)
+}
+
+fn validate_runtime_help(help: &str) -> Result<(), String> {
+    if !help.contains("--json-schema") && !help.contains("--grammar") {
+        return Err(
+            "llama-cli does not support JSON Schema or grammar-constrained output.".to_string(),
+        );
+    }
+    if !help.contains("--no-display-prompt") {
+        return Err("llama-cli does not support quiet prompt output.".to_string());
+    }
+    if !help.contains("--no-conversation") {
+        return Err("llama-cli cannot disable automatic conversation mode.".to_string());
+    }
+    Ok(())
+}
+
+pub fn acceleration_status(runtime_path: &Path) -> String {
+    let output = match Command::new(runtime_path).arg("--list-devices").output() {
+        Ok(output) if output.status.success() => output,
+        _ => return "CPU fallback (runtime device query unavailable)".to_string(),
+    };
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let devices = parse_accelerator_devices(&text);
+    if devices.is_empty() {
+        "CPU fallback (no accelerator detected by llama.cpp)".to_string()
+    } else {
+        format!("automatic GPU offload: {}", devices.join("; "))
+    }
+}
+
+fn parse_accelerator_devices(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.eq_ignore_ascii_case("Available devices:"))
+        .filter(|line| !line.to_ascii_lowercase().contains("cpu"))
+        .map(|line| line.chars().take(180).collect::<String>())
+        .collect()
 }
 
 fn configured_model_path(install_root: &Path) -> PathBuf {
@@ -264,6 +339,8 @@ fn copy_dir_contents(source: &Path, target: &Path) -> Result<(), String> {
 }
 
 fn make_executable(path: &Path) -> Result<(), String> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -278,20 +355,25 @@ fn make_executable(path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_legacy_model_path, is_legacy_runtime_path};
-    use std::path::Path;
+    use super::{
+        is_legacy_model_path, is_legacy_runtime_path, parse_accelerator_devices,
+        validate_runtime_help,
+    };
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn detects_old_downloads_model_path() {
-        assert!(is_legacy_model_path(Path::new(
-            r"C:\Users\Amaan\Downloads\aish-model\models\Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"
-        )));
+        let path = PathBuf::from(format!(
+            r"C:\Users\FixtureUser\Downloads\aish-model\models\{}",
+            super::MODEL_FILENAME
+        ));
+        assert!(is_legacy_model_path(&path));
     }
 
     #[test]
     fn detects_old_llama_cpp_build_path() {
         assert!(is_legacy_runtime_path(Path::new(
-            r"C:\Users\Amaan\Downloads\llama.cpp\build\bin\Release\llama-cli.exe"
+            r"C:\Users\FixtureUser\Downloads\llama.cpp\build\bin\Release\llama-cli.exe"
         )));
     }
 
@@ -301,5 +383,27 @@ mod tests {
         assert!(!is_legacy_runtime_path(Path::new(
             r"D:\Tools\llama-cli.exe"
         )));
+    }
+
+    #[test]
+    fn validates_required_structured_runtime_capabilities() {
+        assert!(
+            validate_runtime_help("--json-schema --no-display-prompt --no-conversation").is_ok()
+        );
+        assert!(validate_runtime_help("--grammar --no-display-prompt --no-conversation").is_ok());
+        assert!(validate_runtime_help("--temp --no-display-prompt").is_err());
+        assert!(validate_runtime_help("--json-schema").is_err());
+    }
+
+    #[test]
+    fn parses_accelerators_without_treating_cpu_as_a_gpu() {
+        assert!(parse_accelerator_devices("Available devices:\n").is_empty());
+        assert_eq!(
+            parse_accelerator_devices(
+                "Available devices:\n  Vulkan0: NVIDIA GeForce RTX (8192 MiB)\n"
+            ),
+            vec!["Vulkan0: NVIDIA GeForce RTX (8192 MiB)"]
+        );
+        assert!(parse_accelerator_devices("Available devices:\nCPU: host").is_empty());
     }
 }

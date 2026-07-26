@@ -1,4 +1,5 @@
 mod logging;
+mod model_registry;
 mod runtime_bootstrap;
 mod setup;
 mod updater;

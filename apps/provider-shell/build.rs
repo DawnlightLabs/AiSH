@@ -49,6 +49,7 @@ fn generate_legacy_main(manifest_dir: &Path, out_dir: &Path) {
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", source_path.display()));
     let generated = source
         .replacen("mod logging;", "use crate::logging;", 1)
+        .replacen("mod model_registry;", "use crate::model_registry;", 1)
         .replacen("mod setup;", "use crate::setup;", 1)
         .replacen("mod updater;", "use crate::updater;", 1)
         .replacen("fn main()", "pub fn run()", 1);
