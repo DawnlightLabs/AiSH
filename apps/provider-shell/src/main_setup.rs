@@ -793,9 +793,7 @@ fn looks_like_command_attempt_with(
     }
     if words.len() <= 2
         || words.iter().skip(1).any(|word| {
-            word.starts_with('-')
-                || word.contains(['/', '\\', '=', ':', '.', '@'])
-                || word == &"|"
+            word.starts_with('-') || word == &"|"
         })
     {
         return true;
@@ -1071,7 +1069,16 @@ mod tests {
     };
 
     fn test_command_lookup(command: &str) -> bool {
-        ["git", "Get-ChildItem", "go", "aish", "cargo", "npm"]
+        [
+            "git",
+            "Get-ChildItem",
+            "go",
+            "aish",
+            "cargo",
+            "npm",
+            "open",
+            "find",
+        ]
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(command))
     }
@@ -1128,6 +1135,7 @@ mod tests {
             "install the project dependencies",
             "go to the nearest folder",
             "find large files in this project",
+            "open the folder containing manifest.json",
         ] {
             assert_eq!(
                 classify_shell_input_with(input, &ProviderInputMode::AiRun, test_command_lookup),
