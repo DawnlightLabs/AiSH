@@ -227,12 +227,26 @@ fn install_release(tag: &str) -> Result<bool, String> {
     };
     let downloaded = find_file(&extract_dir, executable_name)
         .ok_or_else(|| format!("release archive did not contain {executable_name}"))?;
+    let runtime_executable = find_file(&extract_dir, runtime_filename())
+        .ok_or_else(|| format!("release archive did not contain {}", runtime_filename()))?;
+    let runtime_source = runtime_executable
+        .parent()
+        .ok_or_else(|| "bundled runtime path had no parent directory".to_string())?;
+    let staged_runtime = work_dir.join("runtime-update");
+    copy_dir_contents(runtime_source, &staged_runtime)?;
     let current = env::current_exe().map_err(|error| error.to_string())?;
+    let runtime_target = installed_runtime_dir(&current)?;
 
     if env::consts::OS == "windows" {
         let replacement = work_dir.join("aish-update.exe");
         fs::copy(&downloaded, &replacement).map_err(|error| error.to_string())?;
-        windows_apply::start_windows_replace(&replacement, &current, &normalize_version(tag))?;
+        windows_apply::start_windows_replace(
+            &replacement,
+            &current,
+            &staged_runtime,
+            &runtime_target,
+            &normalize_version(tag),
+        )?;
         println!("AiSH update prepared. This shell will exit so Windows can replace aish.exe.");
         return Ok(true);
     }
@@ -246,9 +260,60 @@ fn install_release(tag: &str) -> Result<bool, String> {
             current.display()
         )
     })?;
+    windows_apply::replace_runtime_directory(&staged_runtime, &runtime_target)?;
 
     println!("update complete. Restart AiSH to use {tag}.");
     Ok(false)
+}
+
+fn runtime_filename() -> &'static str {
+    if cfg!(windows) {
+        "llama-cli.exe"
+    } else {
+        "llama-cli"
+    }
+}
+
+fn installed_runtime_dir(executable: &Path) -> Result<PathBuf, String> {
+    let bin_dir = executable
+        .parent()
+        .ok_or_else(|| "installed executable has no parent directory".to_string())?;
+    if bin_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+    {
+        Ok(bin_dir
+            .parent()
+            .ok_or_else(|| "installed bin directory has no parent".to_string())?
+            .join("runtime"))
+    } else {
+        Ok(bin_dir.join("runtime"))
+    }
+}
+
+fn copy_dir_contents(source: &Path, target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target)
+        .map_err(|error| format!("failed to create {}: {error}", target.display()))?;
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("failed to read {}: {error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_contents(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path).map_err(|error| {
+                format!(
+                    "failed to copy {} to {}: {error}",
+                    source_path.display(),
+                    target_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn platform_asset() -> Result<&'static str, String> {
@@ -385,6 +450,8 @@ fn find_file(root: &Path, filename: &str) -> Option<PathBuf> {
 }
 
 fn make_executable(path: &Path) -> Result<(), String> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

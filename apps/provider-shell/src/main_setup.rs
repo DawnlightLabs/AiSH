@@ -1,8 +1,10 @@
 mod logging;
+mod model_registry;
 mod setup;
 mod updater;
 
 use aish_ai::ModelProfile;
+use model_registry::ModelRegistry;
 use aish_completion::demo_suggestions;
 use aish_context::inspect_current_project;
 use aish_core::RiskLevel;
@@ -31,8 +33,17 @@ struct PendingCommand {
 #[derive(Debug, Clone)]
 struct ProviderState {
     profile: ModelProfile,
+    registry: ModelRegistry,
     pending: Option<PendingCommand>,
     session: ProviderSession,
+    diagnostics: bool,
+}
+
+#[derive(Debug)]
+struct CommandOutcome {
+    success: bool,
+    exit_code: Option<i32>,
+    stderr: String,
 }
 
 fn main() {
@@ -42,12 +53,20 @@ fn main() {
     }
     install_prompt_env();
 
+    let initial = default_profile();
+    let registry = ModelRegistry::discover(&initial.llama_cli_path);
+    let profile = registry.active().cloned().unwrap_or(initial);
     let mut state = ProviderState {
-        profile: default_profile(),
+        profile,
+        registry,
         pending: None,
         session: ProviderSession::default(),
+        diagnostics: env::var("AISH_DIAGNOSTICS").ok().as_deref() == Some("1"),
     };
     setup::ensure_model(&state.profile);
+    if handle_headless_plan(&state) {
+        return;
+    }
 
     println!("AiSH provider shell");
     println!("version: {}", updater::current_version());
@@ -70,21 +89,23 @@ fn main() {
             continue;
         }
 
-        if input.starts_with('/') && !input.starts_with("//") {
-            if handle_slash(input, &mut state) {
-                break;
+        match classify_shell_input(input, &state.session.mode) {
+            ShellInputRoute::SlashCommand => {
+                if handle_slash(input, &mut state) {
+                    break;
+                }
+                continue;
             }
-            continue;
-        }
-
-        if let Some(command) = input.strip_prefix("//").map(str::trim) {
-            run_user_command_or_recover(command, &mut state);
-            continue;
-        }
-
-        if state.session.mode == ProviderInputMode::Normal || looks_like_command_attempt(input) {
-            run_user_command_or_recover(input, &mut state);
-            continue;
+            ShellInputRoute::ForcedLiteral => {
+                let command = input.strip_prefix("//").map(str::trim).unwrap_or_default();
+                run_user_command_or_recover(command, &mut state);
+                continue;
+            }
+            ShellInputRoute::LiteralCommand => {
+                run_user_command_or_recover(input, &mut state);
+                continue;
+            }
+            ShellInputRoute::NaturalLanguage => {}
         }
 
         let plan = plan_provider_input(ProviderPlanRequest {
@@ -93,6 +114,7 @@ fn main() {
             input: input.to_string(),
             context_json: provider_context(&state),
             profile: Some(state.profile.clone()),
+            diagnostics: state.diagnostics,
         });
 
         handle_plan(plan, &mut state);
@@ -208,10 +230,38 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             }
         }
         "/model" => match (parts.next(), parts.next()) {
-            (None, _) => println!("model: {}", state.profile.label),
-            (Some("list"), _) => println!("{}", state.profile.label),
-            (Some("use"), Some(_)) => println!("Only Qwen2.5 Coder 1.5B is enabled in this build."),
-            _ => println!("usage: /model | /model list | /model use qwen2.5-coder"),
+            (None, _) | (Some("status"), _) => print_model_status(state),
+            (Some("list"), _) => {
+                if state.registry.models().is_empty() {
+                    println!("No compatible GGUF models were discovered.");
+                }
+                for model in state.registry.models() {
+                    let marker = if model.id == state.profile.id { "*" } else { " " };
+                    println!("{marker} {}  [{}]", model.id, model.label);
+                }
+            }
+            (Some("use"), Some(selector)) => match state.registry.use_model(selector) {
+                Ok(model) => {
+                    state.profile = model.clone();
+                    println!("active model: {}", state.profile.label);
+                }
+                Err(error) => println!("{error}"),
+            },
+            _ => println!("usage: /model list | /model use <id> | /model status"),
+        },
+        "/diagnostics" => match parts.next() {
+            Some("on") => {
+                state.diagnostics = true;
+                println!("planner diagnostics: on (sanitized and bounded)");
+            }
+            Some("off") => {
+                state.diagnostics = false;
+                println!("planner diagnostics: off");
+            }
+            _ => println!(
+                "planner diagnostics: {}",
+                if state.diagnostics { "on" } else { "off" }
+            ),
         },
         "/reasoning" | "/working" => match parts.next() {
             Some("on") => {
@@ -269,18 +319,133 @@ fn print_status(state: &ProviderState) {
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellInputRoute {
+    SlashCommand,
+    ForcedLiteral,
+    LiteralCommand,
+    NaturalLanguage,
+}
+
+fn classify_shell_input(input: &str, mode: &ProviderInputMode) -> ShellInputRoute {
+    classify_shell_input_with(input, mode, shell_resolves_command)
+}
+
+fn classify_shell_input_with(
+    input: &str,
+    mode: &ProviderInputMode,
+    lookup: impl Fn(&str) -> bool,
+) -> ShellInputRoute {
+    if input.starts_with("//") {
+        ShellInputRoute::ForcedLiteral
+    } else if input.starts_with('/') {
+        ShellInputRoute::SlashCommand
+    } else if *mode == ProviderInputMode::Normal || looks_like_command_attempt_with(input, lookup) {
+        ShellInputRoute::LiteralCommand
+    } else {
+        ShellInputRoute::NaturalLanguage
+    }
+}
+
+fn handle_headless_plan(state: &ProviderState) -> bool {
+    let args = env::args().collect::<Vec<_>>();
+    let plan_index = args.iter().position(|arg| arg == "--plan-json");
+    let recovery_index = args.iter().position(|arg| arg == "--recover-json");
+    if plan_index.is_none() && recovery_index.is_none() {
+        return false;
+    }
+    if plan_index.is_some() && recovery_index.is_some() {
+        eprintln!("use either --plan-json or --recover-json, not both");
+        std::process::exit(2);
+    }
+    let index = plan_index.or(recovery_index).expect("headless mode index");
+    let Some(intent) = args.get(index + 1).filter(|value| !value.trim().is_empty()) else {
+        eprintln!("usage: aish --plan-json <intent> | --recover-json <command> [--exit-code <code>] [--stderr <text>] [--model <id>] [--diagnostics]");
+        std::process::exit(2);
+    };
+    let selected_model = cli_arg_value(&args, "--model");
+    let profile = match selected_model {
+        Some(selector) => match state.registry.model(selector) {
+            Ok(profile) => profile.clone(),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        },
+        None => state.profile.clone(),
+    };
+    eprintln!(
+        "AiSH planner: loading {} (timeout: {}s)...",
+        profile.label, profile.timeout_seconds
+    );
+    let diagnostics = args.iter().any(|arg| arg == "--diagnostics");
+    let context = provider_context(state);
+    let plan = if recovery_index.is_some() {
+        let exit_code = cli_arg_value(&args, "--exit-code").and_then(|value| value.parse().ok());
+        let stderr = cli_arg_value(&args, "--stderr").unwrap_or_default();
+        plan_failed_command_recovery(
+            intent,
+            exit_code,
+            stderr,
+            "provider_shell_recovery_evaluation".to_string(),
+            context,
+            Some(profile),
+            diagnostics,
+        )
+    } else {
+        plan_provider_input(ProviderPlanRequest {
+            mode: ProviderInputMode::AiRun,
+            surface: "provider_shell_evaluation".to_string(),
+            input: intent.to_string(),
+            context_json: context,
+            profile: Some(profile),
+            diagnostics,
+        })
+    };
+    match serde_json::to_string(&plan) {
+        Ok(json) => println!("{json}"),
+        Err(error) => {
+            eprintln!("failed to serialize planner result: {error}");
+            std::process::exit(1);
+        }
+    }
+    true
+}
+
+fn cli_arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].as_str())
+}
+
+fn print_model_status(state: &ProviderState) {
+    println!("active model: {}", state.profile.label);
+    println!("model id: {}", state.profile.id);
+    println!("family: {}", state.profile.family);
+    println!("model path: {}", state.profile.model_path);
+    println!("runtime: {}", state.profile.llama_cli_path);
+    println!(
+        "acceleration: {}",
+        crate::runtime_bootstrap::acceleration_status(Path::new(&state.profile.llama_cli_path))
+    );
+    println!("structured output: {}", state.profile.structured_output_strategy);
+    println!("context tokens: {}", state.profile.context_tokens);
+    println!("maximum output tokens: {}", state.profile.max_tokens);
+    println!("discovered models: {}", state.registry.models().len());
+}
+
 fn approve_pending(state: &mut ProviderState) {
     if let Some(pending) = state.pending.take() {
         println!("approved: {} ({})", pending.command, pending.risk);
         println!("reason: {}", pending.reason);
-        let ok = run_shell_command(&pending.command);
+        let outcome = run_shell_command(&pending.command);
         logging::record_command(
             pending.intent.as_deref(),
             Some(&pending.command),
-            if ok { "success" } else { "failed" },
+            if outcome.success { "success" } else { "failed" },
             Some(&pending.risk),
             Some(&pending.reason),
-            if ok {
+            if outcome.success {
                 None
             } else {
                 Some("command exited unsuccessfully")
@@ -289,7 +454,7 @@ fn approve_pending(state: &mut ProviderState) {
         state.session.record_command(
             pending.intent.as_deref(),
             &pending.command,
-            if ok { "success" } else { "failed" },
+            if outcome.success { "success" } else { "failed" },
             Some(&pending.reason),
         );
     } else {
@@ -323,6 +488,9 @@ fn print_help() {
     println!("  /complete [prefix]     show shared command completions");
     println!("  /model                 show current model");
     println!("  /model list            list enabled models");
+    println!("  /model use <id>        persist and activate a discovered model");
+    println!("  /model status          show model and runtime configuration");
+    println!("  /diagnostics on|off    toggle sanitized planner diagnostics");
     println!("  /version               show installed AiSH version");
     println!("  /update                check latest release and install after approval");
     println!("  /status                show provider status");
@@ -345,7 +513,7 @@ fn set_mode(state: &mut ProviderState, mode: ProviderInputMode) {
 }
 
 fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
-    if state.session.show_trace {
+    if state.session.show_trace || state.diagnostics {
         print_plan_trace(&plan);
     }
 
@@ -374,6 +542,19 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 Some(message),
                 None,
             );
+        }
+        ProviderPlanAction::ChangeDirectory => {
+            let Some(target) = plan.target.as_deref() else {
+                println!("AiSH could not resolve a directory for that request.");
+                return;
+            };
+            match env::set_current_dir(target) {
+                Ok(()) => {
+                    println!("directory: {}", env::current_dir().unwrap_or_else(|_| PathBuf::from(target)).display());
+                    state.session.record_command(Some(&plan.intent), target, "success", Some(&plan.reason));
+                }
+                Err(error) => println!("Could not enter that directory: {error}"),
+            }
         }
         ProviderPlanAction::ApprovalRequired => {
             let Some(command) = plan.command.as_deref() else {
@@ -424,14 +605,14 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 return;
             };
 
-            let ok = run_shell_command(command);
+            let outcome = run_shell_command(command);
             logging::record_command(
                 Some(&plan.intent),
                 Some(command),
-                if ok { "success" } else { "failed" },
+                if outcome.success { "success" } else { "failed" },
                 Some(risk_label(&plan.risk)),
                 Some(&plan.reason),
-                if ok {
+                if outcome.success {
                     None
                 } else {
                     Some("command exited unsuccessfully")
@@ -440,7 +621,7 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
             state.session.record_command(
                 Some(&plan.intent),
                 command,
-                if ok { "success" } else { "failed" },
+                if outcome.success { "success" } else { "failed" },
                 Some(&plan.reason),
             );
         }
@@ -468,14 +649,14 @@ fn provider_context(state: &ProviderState) -> serde_json::Value {
 }
 
 fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
-    let ok = run_shell_command(command);
+    let outcome = run_shell_command(command);
     logging::record_command(
         None,
         Some(command),
-        if ok { "success" } else { "failed" },
+        if outcome.success { "success" } else { "failed" },
         Some("user"),
         Some("User-entered command."),
-        if ok {
+        if outcome.success {
             None
         } else {
             Some("command exited unsuccessfully")
@@ -484,23 +665,29 @@ fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
     state.session.record_command(
         None,
         command,
-        if ok { "success" } else { "failed" },
+        if outcome.success { "success" } else { "failed" },
         Some("User-entered command."),
     );
-    if ok {
+    if outcome.success {
         return;
     }
     println!("AiSH detected that command failed. Trying to diagnose or correct it...");
     let recovery = plan_failed_command_recovery(
         command,
+        outcome.exit_code,
+        &outcome.stderr,
         "provider_shell".to_string(),
         provider_context(state),
         Some(state.profile.clone()),
+        state.diagnostics,
     );
     handle_plan(recovery, state);
 }
 
-fn looks_like_command_attempt(input: &str) -> bool {
+fn looks_like_command_attempt_with(
+    input: &str,
+    resolves_command: impl Fn(&str) -> bool,
+) -> bool {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.ends_with('?') {
         return false;
@@ -510,21 +697,17 @@ fn looks_like_command_attempt(input: &str) -> bool {
         return true;
     }
 
-    let mut words = trimmed.split_whitespace();
-    let first = words.next().unwrap_or_default().to_ascii_lowercase();
-    let second = words.next().map(|value| value.to_ascii_lowercase());
-
-    // `go` is both a natural-language verb and the Go toolchain executable.
-    // Only treat it as a literal command when the next token is a real Go CLI subcommand.
-    if first == "go" {
-        return is_go_cli_invocation(second.as_deref());
-    }
-
-    if is_natural_language_lead(&first) {
+    let words = trimmed.split_whitespace().collect::<Vec<_>>();
+    let first = words.first().copied().unwrap_or_default();
+    if !resolves_command(first) {
         return false;
     }
-
-    is_high_confidence_command(&first)
+    words.len() <= 2
+        || words.iter().skip(1).any(|word| {
+            word.starts_with('-')
+                || word.contains(['/', '\\', '=', ':', '.', '@'])
+                || word == &"|"
+        })
 }
 
 fn has_explicit_shell_syntax(input: &str) -> bool {
@@ -549,111 +732,45 @@ fn has_explicit_shell_syntax(input: &str) -> bool {
             .any(|suffix| lower.ends_with(suffix))
 }
 
-fn is_natural_language_lead(first: &str) -> bool {
-    [
-        "show", "find", "create", "make", "run", "install", "open", "explain", "what", "why",
-        "how", "can", "could", "would", "please", "list", "tell", "check", "change", "switch",
-        "move", "copy", "delete", "remove", "rename", "take", "give", "print", "display",
-        "navigate", "enter", "leave", "search", "look", "help", "set", "use",
-    ]
-    .contains(&first)
+fn shell_resolves_command(first: &str) -> bool {
+    if first.is_empty() {
+        return false;
+    }
+    if env::current_exe()
+        .ok()
+        .and_then(|path| path.file_stem().map(|value| value.to_string_lossy().to_string()))
+        .is_some_and(|name| name.eq_ignore_ascii_case(first))
+    {
+        return true;
+    }
+    if env::consts::OS == "windows" {
+        Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "if (Get-Command -Name $env:AISH_LOOKUP -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }",
+            ])
+            .env("AISH_LOOKUP", first)
+            .status()
+            .is_ok_and(|status| status.success())
+    } else {
+        Command::new(shell_path())
+            .args(["-lc", "command -v -- \"$AISH_LOOKUP\" >/dev/null 2>&1"])
+            .env("AISH_LOOKUP", first)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
 }
 
-fn is_go_cli_invocation(second: Option<&str>) -> bool {
-    matches!(
-        second,
-        Some(
-            "bug"
-                | "build"
-                | "clean"
-                | "doc"
-                | "env"
-                | "fix"
-                | "fmt"
-                | "generate"
-                | "get"
-                | "install"
-                | "list"
-                | "mod"
-                | "run"
-                | "test"
-                | "tool"
-                | "version"
-                | "vet"
-                | "work"
-        )
-    )
-}
-
-fn is_high_confidence_command(first: &str) -> bool {
-    [
-        "cd",
-        "set-location",
-        "sl",
-        "dir",
-        "ls",
-        "pwd",
-        "get-location",
-        "cat",
-        "get-content",
-        "echo",
-        "write-output",
-        "clear",
-        "cls",
-        "aish",
-        "git",
-        "gh",
-        "npm",
-        "pnpm",
-        "yarn",
-        "bun",
-        "node",
-        "python",
-        "python3",
-        "py",
-        "pip",
-        "pip3",
-        "cargo",
-        "rustc",
-        "docker",
-        "docker-compose",
-        "kubectl",
-        "helm",
-        "terraform",
-        "winget",
-        "choco",
-        "scoop",
-        "code",
-        "cursor",
-        "mkdir",
-        "new-item",
-        "touch",
-        "rm",
-        "del",
-        "remove-item",
-        "cp",
-        "copy-item",
-        "mv",
-        "move-item",
-        "get-childitem",
-        "select-string",
-        "findstr",
-        "test-path",
-        "invoke-webrequest",
-        "curl",
-        "wget",
-        "rg",
-        "fd",
-        "jq",
-        "sed",
-        "awk",
-    ]
-    .contains(&first)
-}
-
-fn run_shell_command(command: &str) -> bool {
+fn run_shell_command(command: &str) -> CommandOutcome {
     if let Some(ok) = handle_cd(command) {
-        return ok;
+        return CommandOutcome {
+            success: ok,
+            exit_code: Some(if ok { 0 } else { 1 }),
+            stderr: String::new(),
+        };
     }
     let output = if env::consts::OS == "windows" {
         Command::new("powershell.exe")
@@ -666,11 +783,19 @@ fn run_shell_command(command: &str) -> bool {
         Ok(output) => {
             print!("{}", String::from_utf8_lossy(&output.stdout));
             eprint!("{}", String::from_utf8_lossy(&output.stderr));
-            output.status.success()
+            CommandOutcome {
+                success: output.status.success(),
+                exit_code: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr).chars().take(4000).collect(),
+            }
         }
         Err(error) => {
             eprintln!("failed to run command: {error}");
-            false
+            CommandOutcome {
+                success: false,
+                exit_code: None,
+                stderr: error.to_string(),
+            }
         }
     }
 }
@@ -784,17 +909,6 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn expand_home(path: PathBuf) -> PathBuf {
-    let text = path.display().to_string();
-    if let Some(rest) = text.strip_prefix("~/") {
-        home_dir().join(rest)
-    } else if text == "~" {
-        home_dir()
-    } else {
-        path
-    }
-}
-
 fn unquote(value: &str) -> String {
     value
         .trim()
@@ -805,37 +919,120 @@ fn unquote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_shell_path, looks_like_command_attempt};
+    use super::{
+        classify_shell_input_with, cli_arg_value, expand_shell_path,
+        looks_like_command_attempt_with, ProviderInputMode, ShellInputRoute,
+    };
+
+    fn test_command_lookup(command: &str) -> bool {
+        ["git", "Get-ChildItem", "go", "aish", "cargo", "npm"]
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(command))
+    }
 
     #[test]
     fn ai_mode_routes_navigation_language_to_the_planner() {
-        assert!(!looks_like_command_attempt("go to downloads"));
-        assert!(!looks_like_command_attempt(
-            "navigate to the Downloads folder"
+        assert!(!looks_like_command_attempt_with(
+            "go to nebula-482",
+            test_command_lookup
         ));
-        assert!(!looks_like_command_attempt("list the top-level folders"));
+        assert!(!looks_like_command_attempt_with(
+            "navigate to the nebula-482 folder",
+            test_command_lookup
+        ));
+        assert!(!looks_like_command_attempt_with(
+            "list the top-level folders",
+            test_command_lookup
+        ));
     }
 
     #[test]
     fn ai_mode_keeps_high_confidence_commands_literal() {
-        assert!(looks_like_command_attempt("git status"));
-        assert!(looks_like_command_attempt("Get-ChildItem -Directory"));
-        assert!(looks_like_command_attempt("go version"));
-        assert!(looks_like_command_attempt("aish --version"));
-        assert!(looks_like_command_attempt("aish -v"));
-        assert!(looks_like_command_attempt(".\\tools\\build.ps1"));
+        for input in [
+            "git status",
+            "Get-ChildItem -Directory",
+            "go version",
+            "aish --version",
+            "aish -v",
+            ".\\tools\\build.ps1",
+        ] {
+            assert!(
+                looks_like_command_attempt_with(input, test_command_lookup),
+                "{input}"
+            );
+        }
     }
 
     #[test]
     fn navigation_expands_common_home_forms() {
         let home = super::home_dir();
         assert_eq!(
-            expand_shell_path("$HOME\\Downloads"),
-            home.join("Downloads")
+            expand_shell_path("$HOME\\Workspace Sample"),
+            home.join("Workspace Sample")
         );
         assert_eq!(
-            expand_shell_path("$env:USERPROFILE\\Downloads"),
-            home.join("Downloads")
+            expand_shell_path("$env:USERPROFILE\\Workspace Sample"),
+            home.join("Workspace Sample")
         );
+    }
+
+    #[test]
+    fn reads_headless_evaluation_arguments_without_shell_parsing() {
+        let args = vec![
+            "aish".to_string(),
+            "--recover-json".to_string(),
+            "tool --bad-flag".to_string(),
+            "--exit-code".to_string(),
+            "127".to_string(),
+        ];
+        assert_eq!(cli_arg_value(&args, "--exit-code"), Some("127"));
+        assert_eq!(cli_arg_value(&args, "--stderr"), None);
+    }
+
+    #[test]
+    fn shell_router_intercepts_slash_controls_and_forced_literals_first() {
+        for input in ["/version", "/update", "/model list", "/diagnostics on"] {
+            assert_eq!(
+                classify_shell_input_with(input, &ProviderInputMode::AiRun, test_command_lookup),
+                ShellInputRoute::SlashCommand,
+                "{input}"
+            );
+        }
+        assert_eq!(
+            classify_shell_input_with(
+                "//Get-ChildItem -Force",
+                &ProviderInputMode::AiRun,
+                test_command_lookup,
+            ),
+            ShellInputRoute::ForcedLiteral
+        );
+    }
+
+    #[test]
+    fn shell_router_handles_cross_platform_literals_and_natural_language() {
+        for input in [
+            "Get-ChildItem -Force",
+            ".\\tools\\build.ps1",
+            "./tools/build.sh --check",
+            "cargo test",
+            "npm install",
+        ] {
+            assert_eq!(
+                classify_shell_input_with(input, &ProviderInputMode::AiRun, test_command_lookup),
+                ShellInputRoute::LiteralCommand,
+                "{input}"
+            );
+        }
+        for input in [
+            "show hidden files here",
+            "check which process is using port 3000",
+            "explain why the previous command failed",
+        ] {
+            assert_eq!(
+                classify_shell_input_with(input, &ProviderInputMode::AiRun, test_command_lookup),
+                ShellInputRoute::NaturalLanguage,
+                "{input}"
+            );
+        }
     }
 }

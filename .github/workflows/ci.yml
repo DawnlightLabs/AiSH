@@ -283,7 +283,8 @@ jobs:
           $files = @(
             'apps/site/public/install.ps1',
             'apps/provider-shell/src/windows_register.ps1',
-            'apps/provider-shell/src/windows_uninstall.ps1'
+            'apps/provider-shell/src/windows_uninstall.ps1',
+            'scripts/run-real-model-acceptance.ps1'
           )
           foreach ($file in $files) {
             $tokens = $null

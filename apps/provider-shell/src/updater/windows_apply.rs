@@ -22,7 +22,14 @@ pub(super) fn handle_apply_args(args: &[String], current_version: &str) -> bool 
 
     let expected_version =
         arg_value(args, "--expected-version").unwrap_or_else(|| current_version.to_string());
-    let result = apply_windows_update(Path::new(&target), &expected_version);
+    let runtime_source = arg_value(args, "--apply-runtime-from").map(PathBuf::from);
+    let runtime_target = arg_value(args, "--apply-runtime-to").map(PathBuf::from);
+    let result = apply_windows_update(
+        Path::new(&target),
+        &expected_version,
+        runtime_source.as_deref(),
+        runtime_target.as_deref(),
+    );
     clear_pending_update();
 
     let exit_code = match result {
@@ -45,6 +52,8 @@ pub(super) fn handle_apply_args(args: &[String], current_version: &str) -> bool 
 pub(super) fn start_windows_replace(
     replacement: &Path,
     current: &Path,
+    runtime_source: &Path,
+    runtime_target: &Path,
     expected_version: &str,
 ) -> Result<(), String> {
     write_pending_update(expected_version)?;
@@ -53,6 +62,10 @@ pub(super) fn start_windows_replace(
     command
         .arg("--apply-update")
         .arg(current)
+        .arg("--apply-runtime-from")
+        .arg(runtime_source)
+        .arg("--apply-runtime-to")
+        .arg(runtime_target)
         .arg("--expected-version")
         .arg(expected_version)
         .stdin(Stdio::null())
@@ -74,13 +87,20 @@ pub(super) fn start_windows_replace(
 pub(super) fn start_windows_replace(
     _replacement: &Path,
     _current: &Path,
+    _runtime_source: &Path,
+    _runtime_target: &Path,
     _expected_version: &str,
 ) -> Result<(), String> {
     Err("Windows replacement helper is only available on Windows".to_string())
 }
 
 #[cfg(windows)]
-fn apply_windows_update(target: &Path, expected_version: &str) -> Result<(), String> {
+fn apply_windows_update(
+    target: &Path,
+    expected_version: &str,
+    runtime_source: Option<&Path>,
+    runtime_target: Option<&Path>,
+) -> Result<(), String> {
     let source =
         env::current_exe().map_err(|error| format!("could not locate update helper: {error}"))?;
     let mut copied = false;
@@ -125,6 +145,16 @@ fn apply_windows_update(target: &Path, expected_version: &str) -> Result<(), Str
         ));
     }
 
+    match (runtime_source, runtime_target) {
+        (Some(source), Some(target)) => replace_runtime_directory(source, target)?,
+        (None, None) => {}
+        _ => {
+            return Err(
+                "runtime update requires both source and target directory arguments".to_string(),
+            )
+        }
+    }
+
     let repair_status = Command::new(target)
         .args(["--repair-install", "--quiet"])
         .env("AISH_SKIP_UPDATE_CHECK", "1")
@@ -141,8 +171,65 @@ fn apply_windows_update(target: &Path, expected_version: &str) -> Result<(), Str
 }
 
 #[cfg(not(windows))]
-fn apply_windows_update(_target: &Path, _expected_version: &str) -> Result<(), String> {
+fn apply_windows_update(
+    _target: &Path,
+    _expected_version: &str,
+    _runtime_source: Option<&Path>,
+    _runtime_target: Option<&Path>,
+) -> Result<(), String> {
     Err("Windows update application is only available on Windows".to_string())
+}
+
+pub(super) fn replace_runtime_directory(source: &Path, target: &Path) -> Result<(), String> {
+    if !source.is_dir() {
+        return Err(format!(
+            "updated runtime directory is missing: {}",
+            source.display()
+        ));
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| "runtime target has no parent directory".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let staged = parent.join("runtime.new");
+    let backup = parent.join("runtime.old");
+    if staged.exists() {
+        fs::remove_dir_all(&staged).map_err(|error| error.to_string())?;
+    }
+    if backup.exists() {
+        fs::remove_dir_all(&backup).map_err(|error| error.to_string())?;
+    }
+    copy_directory(source, &staged)?;
+    if target.exists() {
+        fs::rename(target, &backup).map_err(|error| {
+            format!("failed to stage existing runtime for replacement: {error}")
+        })?;
+    }
+    if let Err(error) = fs::rename(&staged, target) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, target);
+        }
+        return Err(format!("failed to activate updated runtime: {error}"));
+    }
+    if backup.exists() {
+        fs::remove_dir_all(backup).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn copy_directory(source: &Path, target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn active_pending_update() -> Option<String> {
@@ -258,11 +345,40 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_version;
+    use super::{normalize_version, replace_runtime_directory};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn normalizes_release_versions() {
         assert_eq!(normalize_version("v0.4.3"), "0.4.3");
         assert_eq!(normalize_version(" 0.4.3 "), "0.4.3");
+    }
+
+    #[test]
+    fn replaces_the_complete_runtime_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-runtime-update-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("source");
+        let target = root.join("installed").join("runtime");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("llama-cli.fixture"), "new").unwrap();
+        fs::write(source.join("required-library.fixture"), "new").unwrap();
+        fs::write(target.join("stale-library.fixture"), "old").unwrap();
+
+        replace_runtime_directory(&source, &target).unwrap();
+
+        assert!(target.join("llama-cli.fixture").is_file());
+        assert!(target.join("required-library.fixture").is_file());
+        assert!(!target.join("stale-library.fixture").exists());
+        assert!(!root.join("installed").join("runtime.old").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }
