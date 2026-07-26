@@ -14,8 +14,9 @@ use aish_provider::{
     trace_provider_plan, ProviderInputMode, ProviderPlan, ProviderPlanAction, ProviderPlanRequest,
     ProviderSession,
 };
+use std::collections::HashMap;
 use std::env;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -63,6 +64,9 @@ fn main() {
         session: ProviderSession::default(),
         diagnostics: env::var("AISH_DIAGNOSTICS").ok().as_deref() == Some("1"),
     };
+    if handle_headless_route() {
+        return;
+    }
     setup::ensure_model(&state.profile);
     if handle_headless_plan(&state) {
         return;
@@ -334,7 +338,7 @@ fn classify_shell_input(input: &str, mode: &ProviderInputMode) -> ShellInputRout
 fn classify_shell_input_with(
     input: &str,
     mode: &ProviderInputMode,
-    lookup: impl Fn(&str) -> bool,
+    lookup: impl FnMut(&str) -> bool,
 ) -> ShellInputRoute {
     if input.starts_with("//") {
         ShellInputRoute::ForcedLiteral
@@ -344,6 +348,77 @@ fn classify_shell_input_with(
         ShellInputRoute::LiteralCommand
     } else {
         ShellInputRoute::NaturalLanguage
+    }
+}
+
+fn handle_headless_route() -> bool {
+    let args = env::args().collect::<Vec<_>>();
+    let inline_index = args.iter().position(|arg| arg == "--route-json");
+    let file_index = args.iter().position(|arg| arg == "--route-json-file");
+    if inline_index.is_none() && file_index.is_none() {
+        return false;
+    }
+    if inline_index.is_some() && file_index.is_some() {
+        eprintln!("use either --route-json or --route-json-file, not both");
+        std::process::exit(2);
+    }
+    let index = inline_index.or(file_index).expect("route mode index");
+    let Some(source) = args.get(index + 1).filter(|value| !value.trim().is_empty()) else {
+        eprintln!(
+            "usage: aish --route-json <input> | --route-json - | --route-json-file <path>"
+        );
+        std::process::exit(2);
+    };
+
+    let inputs = if file_index.is_some() {
+        match std::fs::read_to_string(source) {
+            Ok(content) => content
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                eprintln!("failed to read routing input file: {error}");
+                std::process::exit(2);
+            }
+        }
+    } else if source == "-" {
+        io::stdin()
+            .lock()
+            .lines()
+            .map_while(Result::ok)
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+    } else {
+        vec![source.to_string()]
+    };
+    let mut resolution_cache = HashMap::new();
+    for input in inputs {
+        let route = classify_shell_input_with(&input, &ProviderInputMode::AiRun, |head| {
+            if let Some(resolved) = resolution_cache.get(head) {
+                return *resolved;
+            }
+            let resolved = shell_resolves_command(head);
+            resolution_cache.insert(head.to_string(), resolved);
+            resolved
+        });
+        let output = serde_json::json!({
+            "input": input,
+            "route": shell_input_route_name(route),
+            "executed": false,
+            "model_invoked": false,
+        });
+        println!("{output}");
+    }
+    true
+}
+
+fn shell_input_route_name(route: ShellInputRoute) -> &'static str {
+    match route {
+        ShellInputRoute::SlashCommand => "slash_command",
+        ShellInputRoute::ForcedLiteral => "forced_literal",
+        ShellInputRoute::LiteralCommand => "literal_command",
+        ShellInputRoute::NaturalLanguage => "natural_language",
     }
 }
 
@@ -550,8 +625,16 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
             };
             match env::set_current_dir(target) {
                 Ok(()) => {
-                    println!("directory: {}", env::current_dir().unwrap_or_else(|_| PathBuf::from(target)).display());
-                    state.session.record_command(Some(&plan.intent), target, "success", Some(&plan.reason));
+                    let current =
+                        env::current_dir().unwrap_or_else(|_| PathBuf::from(target));
+                    let visible = user_facing_path(&current);
+                    println!("directory: {}", visible.display());
+                    state.session.record_command(
+                        Some(&plan.intent),
+                        &visible.display().to_string(),
+                        "success",
+                        Some(&plan.reason),
+                    );
                 }
                 Err(error) => println!("Could not enter that directory: {error}"),
             }
@@ -643,8 +726,11 @@ fn print_plan_trace(plan: &ProviderPlan) {
 }
 
 fn provider_context(state: &ProviderState) -> serde_json::Value {
-    let base =
-        serde_json::to_value(inspect_current_project()).unwrap_or_else(|_| serde_json::json!({}));
+    let mut project = inspect_current_project();
+    project.cwd = user_facing_path(Path::new(&project.cwd))
+        .display()
+        .to_string();
+    let base = serde_json::to_value(project).unwrap_or_else(|_| serde_json::json!({}));
     build_provider_context(base, &state.session)
 }
 
@@ -686,7 +772,7 @@ fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
 
 fn looks_like_command_attempt_with(
     input: &str,
-    resolves_command: impl Fn(&str) -> bool,
+    mut resolves_command: impl FnMut(&str) -> bool,
 ) -> bool {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.ends_with('?') {
@@ -699,15 +785,51 @@ fn looks_like_command_attempt_with(
 
     let words = trimmed.split_whitespace().collect::<Vec<_>>();
     let first = words.first().copied().unwrap_or_default();
+    // Resolution is performed without executing the user's input. Once a
+    // command-shaped input has a resolvable head, its eventual exit status
+    // cannot reclassify it as natural language; failures use recovery instead.
     if !resolves_command(first) {
         return false;
     }
-    words.len() <= 2
+    if words.len() <= 2
         || words.iter().skip(1).any(|word| {
-            word.starts_with('-')
-                || word.contains(['/', '\\', '=', ':', '.', '@'])
-                || word == &"|"
+            word.starts_with('-') || word == &"|"
         })
+    {
+        return true;
+    }
+    !has_natural_language_connectors(&words)
+}
+
+fn has_natural_language_connectors(words: &[&str]) -> bool {
+    words.iter().skip(1).any(|word| {
+        matches!(
+            word.trim_matches(|character: char| !character.is_alphanumeric())
+                .to_ascii_lowercase()
+                .as_str(),
+            "a" | "an"
+                | "the"
+                | "to"
+                | "into"
+                | "from"
+                | "in"
+                | "on"
+                | "at"
+                | "for"
+                | "with"
+                | "this"
+                | "that"
+                | "these"
+                | "those"
+                | "my"
+                | "our"
+                | "here"
+                | "which"
+                | "what"
+                | "why"
+                | "how"
+        )
+    })
 }
 
 fn has_explicit_shell_syntax(input: &str) -> bool {
@@ -877,7 +999,28 @@ fn default_profile() -> ModelProfile {
 
 fn prompt_cwd(mode: &ProviderInputMode) -> String {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    format!("aish:{} {}", describe_provider_mode(mode), cwd.display())
+    format!(
+        "aish:{} {}",
+        describe_provider_mode(mode),
+        user_facing_path(&cwd).display()
+    )
+}
+
+fn user_facing_path(path: &Path) -> PathBuf {
+    if !cfg!(windows) {
+        return path.to_path_buf();
+    }
+    PathBuf::from(strip_windows_verbatim_path(&path.to_string_lossy()))
+}
+
+fn strip_windows_verbatim_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 fn shell_name() -> String {
@@ -921,11 +1064,21 @@ fn unquote(value: &str) -> String {
 mod tests {
     use super::{
         classify_shell_input_with, cli_arg_value, expand_shell_path,
-        looks_like_command_attempt_with, ProviderInputMode, ShellInputRoute,
+        looks_like_command_attempt_with, strip_windows_verbatim_path, ProviderInputMode,
+        ShellInputRoute,
     };
 
     fn test_command_lookup(command: &str) -> bool {
-        ["git", "Get-ChildItem", "go", "aish", "cargo", "npm"]
+        [
+            "git",
+            "Get-ChildItem",
+            "go",
+            "aish",
+            "cargo",
+            "npm",
+            "open",
+            "find",
+        ]
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(command))
     }
@@ -949,15 +1102,44 @@ mod tests {
     #[test]
     fn ai_mode_keeps_high_confidence_commands_literal() {
         for input in [
+            "git pull",
+            "git pulll",
             "git status",
             "Get-ChildItem -Directory",
             "go version",
             "aish --version",
             "aish -v",
+            "npm run build",
+            "git remote add upstream origin",
             ".\\tools\\build.ps1",
         ] {
             assert!(
                 looks_like_command_attempt_with(input, test_command_lookup),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_command_failures_remain_literal_while_sentences_use_the_planner() {
+        for input in ["git pull", "git pulll", "cargo tset", "npm isntall"] {
+            assert_eq!(
+                classify_shell_input_with(input, &ProviderInputMode::AiRun, test_command_lookup),
+                ShellInputRoute::LiteralCommand,
+                "{input}"
+            );
+        }
+        for input in [
+            "pull the latest updates",
+            "test the entire workspace",
+            "install the project dependencies",
+            "go to the nearest folder",
+            "find large files in this project",
+            "open the folder containing manifest.json",
+        ] {
+            assert_eq!(
+                classify_shell_input_with(input, &ProviderInputMode::AiRun, test_command_lookup),
+                ShellInputRoute::NaturalLanguage,
                 "{input}"
             );
         }
@@ -973,6 +1155,22 @@ mod tests {
         assert_eq!(
             expand_shell_path("$env:USERPROFILE\\Workspace Sample"),
             home.join("Workspace Sample")
+        );
+    }
+
+    #[test]
+    fn strips_windows_verbatim_prefixes_from_user_visible_paths() {
+        assert_eq!(
+            strip_windows_verbatim_path(r"\\?\D:\workspace\crates"),
+            r"D:\workspace\crates"
+        );
+        assert_eq!(
+            strip_windows_verbatim_path(r"\\?\UNC\server\share\folder"),
+            r"\\server\share\folder"
+        );
+        assert_eq!(
+            strip_windows_verbatim_path(r"D:\workspace\crates"),
+            r"D:\workspace\crates"
         );
     }
 
