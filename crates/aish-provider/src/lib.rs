@@ -1199,16 +1199,49 @@ fn semantic_to_provider_plan(
                 }
             }
         }
-        SemanticPlanKind::Answer | SemanticPlanKind::Clarification => response_plan(
-            input,
-            surface,
-            plan.message
-                .unwrap_or_else(|| "Please clarify the request.".to_string()),
-            model_output,
-            runtime,
-            diagnostics,
-        ),
+        SemanticPlanKind::Answer | SemanticPlanKind::Clarification => {
+            let message = plan
+                .message
+                .unwrap_or_else(|| "Please clarify the request.".to_string());
+            response_plan(
+                input,
+                surface,
+                grounded_recovery_answer(&message, context),
+                model_output,
+                runtime,
+                diagnostics,
+            )
+        }
     }
+}
+
+fn grounded_recovery_answer(message: &str, context: &serde_json::Value) -> String {
+    if context.get("failed_command").is_none() {
+        return message.to_string();
+    }
+    let lower = message.to_ascii_lowercase();
+    let speculative_at = [
+        " likely ",
+        " probably ",
+        " perhaps ",
+        " may be ",
+        " might be ",
+        " could be ",
+    ]
+    .iter()
+    .filter_map(|marker| lower.find(marker))
+    .min();
+    let Some(speculative_at) = speculative_at else {
+        return message.to_string();
+    };
+    let supported = message[..speculative_at]
+        .rfind(['.', '!', '?'])
+        .map(|index| message[..=index].trim());
+    supported
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| failed_command_evidence_message(context))
+        .unwrap_or_else(|| message.to_string())
 }
 
 fn response_plan(
@@ -2214,6 +2247,31 @@ mod planner_tests {
         assert_eq!(failed["recovery_attempt"], 1);
         assert_eq!(failed["maximum_recovery_attempts"], 1);
         assert!(failed["stderr"].as_str().unwrap().chars().count() <= 2000);
+    }
+
+    #[test]
+    fn recovery_answers_drop_unsupported_speculation_after_grounded_evidence() {
+        let context = failed_command_context(
+            serde_json::json!({}),
+            "npm run build",
+            Some(1),
+            "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'vite'",
+        );
+        let answer = grounded_recovery_answer(
+            "The build failed because the package 'vite' was not found. This is likely due to a typo in vite.config.mjs.",
+            &context,
+        );
+        assert_eq!(
+            answer,
+            "The build failed because the package 'vite' was not found."
+        );
+        assert_eq!(
+            grounded_recovery_answer(
+                "The command is misspelled. The corrected command is git pull.",
+                &context,
+            ),
+            "The command is misspelled. The corrected command is git pull."
+        );
     }
 
     #[test]
