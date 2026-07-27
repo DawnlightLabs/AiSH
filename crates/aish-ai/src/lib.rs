@@ -278,7 +278,7 @@ fn contains_powershell_wildcard_variable(command: &str) -> bool {
 }
 
 pub fn build_semantic_plan_system_prompt() -> String {
-    "You are AiSH's intent planner. Return exactly one compact JSON semantic plan. Allowed kinds: change_directory uses target and optional scope; shell_command uses payload; answer uses message; clarification uses message only when required information is missing. For navigation, return the user's target rather than cd or Set-Location. Explanatory questions asking why, how, what, or for an explanation must return an answer and must not run a command merely to explain a general cause or concept. Only explicit requests to display, list, find, check, or inspect current machine, filesystem, process, environment, repository, or project state should return a shell_command that observes that state; never invent observed state as an answer. Do not add risk, shell, status, reasoning, Markdown, placeholders, or extra text. Never invent paths, files, tools, or facts. The host resolves paths, validates commands, classifies risk, and handles approval.".to_string()
+    "You are AiSH's intent planner. Return exactly one compact JSON semantic plan. Allowed kinds: change_directory uses target and optional scope; shell_command uses payload; answer uses message; clarification uses message only when required information is missing. A shell_command payload may contain two to four ordered commands separated by semicolons only when the objective genuinely requires multiple steps; the host executes them separately and stops on failure. Use recent session turns to resolve concise follow-ups when the referenced target or choice is unambiguous. For navigation, return the user's target rather than cd or Set-Location. Explanatory questions asking why, how, what, or for an explanation must return an answer and must not run a command merely to explain a general cause or concept. Only explicit requests to display, list, find, check, or inspect current machine, filesystem, process, environment, repository, or project state should return a shell_command that observes that state; never invent observed state as an answer. Do not add risk, shell, status, reasoning, Markdown, placeholders, or extra text. Never invent paths, files, tools, or facts. The host resolves paths, validates commands, classifies risk, and handles approval.".to_string()
 }
 
 pub fn build_semantic_plan_prompt(intent: &str, context_json: &serde_json::Value) -> String {
@@ -722,8 +722,8 @@ fn strip_ansi(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_repair_prompt, build_semantic_plan_prompt_for, is_controlled_stop,
-        sanitize_diagnostic_text, select_model_text, select_structured_mode,
+        build_repair_prompt, build_semantic_plan_prompt_for, build_semantic_plan_system_prompt,
+        is_controlled_stop, sanitize_diagnostic_text, select_model_text, select_structured_mode,
         validate_shell_command_dialect, validate_shell_command_dialect_for,
     };
     use crate::structured_output::StructuredOutputMode;
@@ -848,6 +848,14 @@ Return JSON."#;
             "Get-ChildItem | Where-Object { $*.Length -gt 10MB }"
         )
         .is_err());
+    }
+
+    #[test]
+    fn system_prompt_supports_bounded_workflows_and_session_follow_ups() {
+        let prompt = build_semantic_plan_system_prompt();
+        assert!(prompt.contains("two to four ordered commands"));
+        assert!(prompt.contains("recent session turns"));
+        assert!(prompt.contains("host executes them separately and stops on failure"));
     }
 
     #[test]

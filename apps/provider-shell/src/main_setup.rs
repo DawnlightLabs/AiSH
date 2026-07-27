@@ -11,8 +11,8 @@ use aish_core::RiskLevel;
 use aish_provider::{
     build_provider_context, default_model_profile, describe_context_mode, describe_provider_mode,
     parse_context_mode, parse_provider_mode, plan_failed_command_recovery, plan_provider_input,
-    trace_provider_plan, ProviderInputMode, ProviderPlan, ProviderPlanAction, ProviderPlanRequest,
-    ProviderSession,
+    split_planned_commands, trace_provider_plan, ProviderInputMode, ProviderPlan,
+    ProviderPlanAction, ProviderPlanRequest, ProviderSession,
 };
 use std::collections::HashMap;
 use std::env;
@@ -514,8 +514,8 @@ fn approve_pending(state: &mut ProviderState) {
     if let Some(pending) = state.pending.take() {
         println!("approved: {} ({})", pending.command, pending.risk);
         println!("reason: {}", pending.reason);
-        let outcome = run_shell_command(&pending.command);
-        print_empty_outcome(&outcome);
+        let outcome = run_planned_commands(&pending.command);
+        print_empty_outcome(&outcome, false);
         logging::record_command(
             pending.intent.as_deref(),
             Some(&pending.command),
@@ -534,6 +534,14 @@ fn approve_pending(state: &mut ProviderState) {
             if outcome.success { "success" } else { "failed" },
             Some(&pending.reason),
         );
+        state.session.record_turn(
+            pending.intent.as_deref().unwrap_or(&pending.command),
+            if outcome.success {
+                "approved shell action completed successfully"
+            } else {
+                "approved shell action failed"
+            },
+        );
     } else {
         println!("no pending command");
     }
@@ -548,6 +556,10 @@ fn cancel_pending(state: &mut ProviderState) {
             Some(&pending.risk),
             Some(&pending.reason),
             None,
+        );
+        state.session.record_turn(
+            pending.intent.as_deref().unwrap_or(&pending.command),
+            "pending shell action was cancelled",
         );
         println!("pending command cancelled");
     } else {
@@ -599,6 +611,7 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
         ProviderPlanAction::Error => {
             let error = plan.error.as_deref().unwrap_or(&plan.reason);
             println!("AiSH error: {error}");
+            state.session.record_turn(&plan.intent, error);
             logging::record_command(
                 Some(&plan.intent),
                 plan.command.as_deref(),
@@ -611,6 +624,7 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
         ProviderPlanAction::Fallback => {
             let message = plan.fallback_message.as_deref().unwrap_or(&plan.reason);
             println!("{message}");
+            state.session.record_turn(&plan.intent, message);
             logging::record_command(
                 Some(&plan.intent),
                 None,
@@ -637,8 +651,17 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                         "success",
                         Some(&plan.reason),
                     );
+                    state.session.record_turn(
+                        &plan.intent,
+                        &format!("changed directory to {}", visible.display()),
+                    );
                 }
-                Err(error) => println!("Could not enter that directory: {error}"),
+                Err(error) => {
+                    println!("Could not enter that directory: {error}");
+                    state
+                        .session
+                        .record_turn(&plan.intent, &format!("directory change failed: {error}"));
+                }
             }
         }
         ProviderPlanAction::ApprovalRequired => {
@@ -666,6 +689,9 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
             println!("reason: {}", plan.reason);
             println!("command: {command}");
             println!("type /approve or /cancel");
+            state
+                .session
+                .record_turn(&plan.intent, &format!("approval required for: {command}"));
 
             logging::record_command(
                 Some(&plan.intent),
@@ -690,8 +716,8 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 return;
             };
 
-            let outcome = run_shell_command(command);
-            print_empty_outcome(&outcome);
+            let outcome = run_planned_commands(command);
+            print_empty_outcome(&outcome, true);
             logging::record_command(
                 Some(&plan.intent),
                 Some(command),
@@ -709,6 +735,14 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 command,
                 if outcome.success { "success" } else { "failed" },
                 Some(&plan.reason),
+            );
+            state.session.record_turn(
+                &plan.intent,
+                if outcome.success {
+                    "shell action completed successfully"
+                } else {
+                    "shell action failed"
+                },
             );
         }
     }
@@ -757,6 +791,14 @@ fn run_user_command_or_recover(command: &str, state: &mut ProviderState) {
         command,
         if outcome.success { "success" } else { "failed" },
         Some("User-entered command."),
+    );
+    state.session.record_turn(
+        command,
+        if outcome.success {
+            "literal command completed successfully"
+        } else {
+            "literal command failed"
+        },
     );
     if outcome.success {
         return;
@@ -940,23 +982,74 @@ fn run_shell_command(command: &str) -> CommandOutcome {
     }
 }
 
+fn run_planned_commands(command: &str) -> CommandOutcome {
+    let commands = split_planned_commands(command);
+    if commands.len() <= 1 {
+        return run_shell_command(command);
+    }
+    println!("AiSH plan: {} steps.", commands.len());
+    let mut aggregate = CommandOutcome {
+        success: true,
+        exit_code: Some(0),
+        stderr: String::new(),
+        had_output: false,
+    };
+    for (index, step) in commands.iter().enumerate() {
+        println!("step {}/{}: {step}", index + 1, commands.len());
+        let outcome = run_shell_command(step);
+        aggregate.had_output |= outcome.had_output;
+        if !outcome.stderr.is_empty() {
+            if !aggregate.stderr.is_empty() {
+                aggregate.stderr.push('\n');
+            }
+            aggregate.stderr.push_str(&outcome.stderr);
+            aggregate.stderr = aggregate.stderr.chars().take(4000).collect();
+        }
+        aggregate.exit_code = outcome.exit_code;
+        if !outcome.success {
+            aggregate.success = false;
+            println!(
+                "AiSH stopped the plan after step {} failed; later steps were not run.",
+                index + 1
+            );
+            return aggregate;
+        }
+    }
+    aggregate
+}
+
 fn print_empty_success(outcome: &CommandOutcome) {
     if outcome.success && !outcome.had_output {
         println!("Command completed successfully; it returned no output.");
     }
 }
 
-fn print_empty_outcome(outcome: &CommandOutcome) {
+fn print_empty_outcome(outcome: &CommandOutcome, result_query: bool) {
+    if let Some(message) = empty_outcome_message(outcome, result_query) {
+        println!("{message}");
+    }
+}
+
+fn empty_outcome_message(outcome: &CommandOutcome, result_query: bool) -> Option<String> {
     if outcome.had_output {
-        return;
+        return None;
     }
-    if outcome.success {
-        print_empty_success(outcome);
+    if result_query {
+        return Some(if outcome.success {
+            "No matching results were found.".to_string()
+        } else if let Some(exit_code) = outcome.exit_code {
+            format!("No matching results were found (query exited with code {exit_code}).")
+        } else {
+            "The query failed without returning any results.".to_string()
+        });
+    }
+    Some(if outcome.success {
+        "Command completed successfully; it returned no output.".to_string()
     } else if let Some(exit_code) = outcome.exit_code {
-        println!("Command returned no output and exited with code {exit_code}.");
+        format!("Command returned no output and exited with code {exit_code}.")
     } else {
-        println!("Command failed without returning output.");
-    }
+        "Command failed without returning output.".to_string()
+    })
 }
 
 fn handle_cd(command: &str) -> Option<bool> {
@@ -1104,9 +1197,10 @@ fn unquote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        child_working_directory, classify_shell_input_with, cli_arg_value, expand_shell_path,
-        looks_like_command_attempt_with, run_shell_command, strip_windows_verbatim_path,
-        ProviderInputMode, ShellInputRoute,
+        child_working_directory, classify_shell_input_with, cli_arg_value, empty_outcome_message,
+        expand_shell_path, looks_like_command_attempt_with, run_planned_commands,
+        run_shell_command,
+        strip_windows_verbatim_path, ProviderInputMode, ShellInputRoute,
     };
 
     fn test_command_lookup(command: &str) -> bool {
@@ -1239,6 +1333,17 @@ mod tests {
         assert!(!outcome.success);
         assert_eq!(outcome.exit_code, Some(7));
         assert!(!outcome.had_output);
+        assert_eq!(
+            empty_outcome_message(&outcome, true).as_deref(),
+            Some("No matching results were found (query exited with code 7).")
+        );
+    }
+
+    #[test]
+    fn multi_step_execution_stops_after_the_first_failure() {
+        let outcome = run_planned_commands("exit 7; exit 0");
+        assert!(!outcome.success);
+        assert_eq!(outcome.exit_code, Some(7));
     }
 
     #[test]

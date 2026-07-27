@@ -154,11 +154,19 @@ pub struct ProviderSessionCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSessionTurn {
+    pub request: String,
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderSession {
     pub mode: ProviderInputMode,
     pub context_mode: ProviderContextMode,
     pub show_trace: bool,
     pub command_memory: Vec<ProviderSessionCommand>,
+    #[serde(default)]
+    pub turn_memory: Vec<ProviderSessionTurn>,
 }
 
 impl Default for ProviderSession {
@@ -168,6 +176,7 @@ impl Default for ProviderSession {
             context_mode: ProviderContextMode::Auto,
             show_trace: false,
             command_memory: Vec::new(),
+            turn_memory: Vec::new(),
         }
     }
 }
@@ -194,6 +203,18 @@ impl ProviderSession {
 
     pub fn clear_context(&mut self) {
         self.command_memory.clear();
+        self.turn_memory.clear();
+    }
+
+    pub fn record_turn(&mut self, request: &str, outcome: &str) {
+        self.turn_memory.push(ProviderSessionTurn {
+            request: request.chars().take(500).collect(),
+            outcome: outcome.chars().take(500).collect(),
+        });
+        if self.turn_memory.len() > 12 {
+            let overflow = self.turn_memory.len() - 12;
+            self.turn_memory.drain(0..overflow);
+        }
     }
 }
 
@@ -542,13 +563,21 @@ fn normalize_shell_plan_for_host(plan: &mut SemanticPlan, input: &str) {
     let Some(command) = plan.payload.take() else {
         return;
     };
+    let normalized = split_planned_commands(&command)
+        .into_iter()
+        .map(|command| normalize_shell_command_for_host(&command, input))
+        .collect::<Vec<_>>()
+        .join("; ");
+    plan.payload = Some(normalized);
+}
+
+fn normalize_shell_command_for_host(command: &str, input: &str) -> String {
     let command = normalize_powershell_environment_references(&command, input);
     if is_managed_cmd_command(&command) || !contains_cmd_slash_switch(&command) {
-        plan.payload = Some(command);
-        return;
+        return command;
     }
     let escaped = command.replace('\'', "''");
-    plan.payload = Some(format!("cmd.exe /d /s /c '{escaped}'"));
+    format!("cmd.exe /d /s /c '{escaped}'")
 }
 
 fn normalize_powershell_environment_references(command: &str, input: &str) -> String {
@@ -720,7 +749,15 @@ fn validate_model_plan(
     match plan.kind {
         SemanticPlanKind::ShellCommand => {
             let command = plan.payload.as_deref().unwrap_or_default();
-            validate_shell_command_dialect(command)?;
+            let commands = split_planned_commands(command);
+            if commands.is_empty() || commands.len() > 4 {
+                return Err(
+                    "A shell plan must contain between one and four ordered commands.".to_string(),
+                );
+            }
+            for step in &commands {
+                validate_shell_command_dialect(step)?;
+            }
             if has_unresolved_reference(input, context) {
                 return if is_navigation_shell_command(command) {
                     Err(
@@ -745,6 +782,11 @@ fn validate_model_plan(
                         "The explicitly named target '{target}' must use a name or image selector, never a PID or numeric ID selector."
                     ));
                 }
+            }
+            if let Some(path) = nonexistent_launch_path(input, command, context) {
+                return Err(format!(
+                    "The generated launch command referenced '{path}', but that executable or target path does not exist. Use an available command or an existing filesystem path without inventing an installation location."
+                ));
             }
             if classify_risk(command).risk == RiskLevel::Low
                 && command_references_nonexistent_absolute_path(command)
@@ -864,6 +906,54 @@ fn command_uses_named_target_as_numeric_identifier(command: &str, target: &str) 
     })
 }
 
+fn nonexistent_launch_path(
+    input: &str,
+    command: &str,
+    context: &serde_json::Value,
+) -> Option<String> {
+    if !request_is_launch_action(input) {
+        return None;
+    }
+    let cwd = context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    shell_like_tokens(command).into_iter().find_map(|token| {
+        let token = token.trim_matches(|character: char| {
+            matches!(
+                character,
+                '\'' | '"' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+            )
+        });
+        if token.is_empty() || token.contains(['*', '?', '$', '%']) || token.starts_with('-') {
+            return None;
+        }
+        let path = PathBuf::from(token);
+        let explicit_path = path.is_absolute()
+            || token.starts_with("./")
+            || token.starts_with("../")
+            || token.starts_with(".\\")
+            || token.starts_with("..\\");
+        if !explicit_path {
+            return None;
+        }
+        let rooted = if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        };
+        (!rooted.exists()).then(|| token.to_string())
+    })
+}
+
+fn request_is_launch_action(input: &str) -> bool {
+    input
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|word| matches!(word.to_ascii_lowercase().as_str(), "open" | "launch"))
+}
+
 fn command_references_nonexistent_absolute_path(command: &str) -> bool {
     shell_like_tokens(command).iter().any(|token| {
         let token = token.trim_matches(|ch: char| {
@@ -918,6 +1008,59 @@ fn shell_like_tokens(command: &str) -> Vec<String> {
     tokens
 }
 
+pub fn split_planned_commands(command: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut current = String::new();
+    let mut single_quoted = false;
+    let mut double_quoted = false;
+    let mut escaped = false;
+    let mut nesting = 0_usize;
+    for character in command.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        let is_shell_escape = character == '`' || (character == '\\' && !cfg!(windows));
+        if is_shell_escape && !single_quoted {
+            current.push(character);
+            escaped = true;
+            continue;
+        }
+        match character {
+            '\'' if !double_quoted => {
+                single_quoted = !single_quoted;
+                current.push(character);
+            }
+            '"' if !single_quoted => {
+                double_quoted = !double_quoted;
+                current.push(character);
+            }
+            '{' | '(' | '[' if !single_quoted && !double_quoted => {
+                nesting += 1;
+                current.push(character);
+            }
+            '}' | ')' | ']' if !single_quoted && !double_quoted => {
+                nesting = nesting.saturating_sub(1);
+                current.push(character);
+            }
+            ';' | '\n' | '\r' if !single_quoted && !double_quoted && nesting == 0 => {
+                let step = current.trim();
+                if !step.is_empty() {
+                    commands.push(step.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(character),
+        }
+    }
+    let step = current.trim();
+    if !step.is_empty() {
+        commands.push(step.to_string());
+    }
+    commands
+}
+
 fn validation_fallback(error: Option<&str>) -> &'static str {
     match error {
         Some(error) if error.contains("navigation request") => {
@@ -946,6 +1089,9 @@ fn validation_fallback(error: Option<&str>) -> &'static str {
         }
         Some(error) if error.contains("absolute path") => {
             "The suggested command referenced a directory or file that does not exist, so I did not run it. Please provide the intended path if one is required."
+        }
+        Some(error) if error.contains("launch command") => {
+            "I could not find both the requested application and an existing target folder. Please check the application name or folder path."
         }
         _ => "I could not produce a safe executable plan from that request. Please rephrase it with the target or desired outcome.",
     }
@@ -1119,13 +1265,19 @@ fn has_unresolved_reference(input: &str, context: &serde_json::Value) -> bool {
         || std::env::current_dir().is_ok();
 
     for (index, word) in words.iter().enumerate() {
+        if word == "that" && recent_session_turn(context).is_none() {
+            return true;
+        }
         if matches!(
             word.as_str(),
-            "that" | "these" | "those" | "one" | "other" | "another"
+            "these" | "those" | "one" | "other" | "another"
         ) {
             return true;
         }
-        if word == "it" && !has_explicit_antecedent(&raw_words, &words, index) {
+        if word == "it"
+            && !has_explicit_antecedent(&raw_words, &words, index)
+            && recent_session_turn(context).is_none()
+        {
             return true;
         }
         if word == "this" {
@@ -1133,7 +1285,10 @@ fn has_unresolved_reference(input: &str, context: &serde_json::Value) -> bool {
                 && words.get(index + 1).is_some_and(|object| {
                     matches!(object.as_str(), "directory" | "folder" | "project")
                 });
-            if !resolved_by_cwd {
+            let resolved_by_turn = words
+                .get(index + 1)
+                .is_some_and(|object| recent_turn_mentions(context, object));
+            if !resolved_by_cwd && !resolved_by_turn {
                 return true;
             }
         }
@@ -1158,6 +1313,27 @@ fn has_unresolved_reference(input: &str, context: &serde_json::Value) -> bool {
         }
     }
     false
+}
+
+fn recent_session_turn(context: &serde_json::Value) -> Option<&serde_json::Value> {
+    context
+        .get("session_turns")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|turns| turns.last())
+}
+
+fn recent_turn_mentions(context: &serde_json::Value, object: &str) -> bool {
+    let Some(turn) = recent_session_turn(context) else {
+        return false;
+    };
+    ["request", "outcome"].iter().any(|field| {
+        turn.get(*field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| {
+                text.split(|character: char| !character.is_alphanumeric())
+                    .any(|word| word.eq_ignore_ascii_case(object))
+            })
+    })
 }
 
 fn has_postnominal_descriptor(words: &[String], noun_index: usize) -> bool {
@@ -1251,9 +1427,14 @@ fn command_has_recursive_flag(command: &str) -> bool {
 }
 
 fn request_has_recursive_scope(input: &str) -> bool {
-    input.split(|ch: char| !ch.is_alphanumeric()).any(|word| {
+    let words = input
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    let explicit_recursive_word = words.iter().any(|word| {
         matches!(
-            word.to_ascii_lowercase().as_str(),
+            word.as_str(),
             "recursive"
                 | "recursively"
                 | "subdirectory"
@@ -1263,7 +1444,24 @@ fn request_has_recursive_scope(input: &str) -> bool {
                 | "below"
                 | "under"
         )
-    })
+    });
+    let quantified_directory_scope = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "all" | "every"))
+        && words.iter().any(|word| {
+            matches!(
+                word.as_str(),
+                "directory" | "directories" | "folder" | "folders"
+            )
+        });
+    let split_subdirectory = words.windows(2).any(|pair| {
+        pair[0] == "sub"
+            && matches!(
+                pair[1].as_str(),
+                "directory" | "directories" | "folder" | "folders"
+            )
+    });
+    explicit_recursive_word || quantified_directory_scope || split_subdirectory
 }
 
 fn semantic_to_provider_plan(
@@ -1574,6 +1772,10 @@ pub fn build_provider_context(
             serde_json::to_value(&session.command_memory).unwrap_or_else(|_| serde_json::json!([])),
         );
         object.insert(
+            "session_turns".to_string(),
+            serde_json::to_value(&session.turn_memory).unwrap_or_else(|_| serde_json::json!([])),
+        );
+        object.insert(
             "agent_context_allowed".to_string(),
             serde_json::json!(session.context_mode == ProviderContextMode::Agent),
         );
@@ -1719,6 +1921,100 @@ mod planner_tests {
                 .pop_front()
                 .ok_or_else(|| "fixture output exhausted".to_string())
         })
+    }
+
+    #[test]
+    fn session_turn_memory_is_bounded_included_in_context_and_clearable() {
+        let mut session = ProviderSession::default();
+        for index in 0..15 {
+            session.record_turn(
+                &format!("request {index}"),
+                &format!("outcome {}", "x".repeat(600)),
+            );
+        }
+        assert_eq!(session.turn_memory.len(), 12);
+        assert_eq!(session.turn_memory[0].request, "request 3");
+        assert_eq!(session.turn_memory[0].outcome.chars().count(), 500);
+        let context = build_provider_context(serde_json::json!({ "cwd": "." }), &session);
+        assert_eq!(
+            context
+                .get("session_turns")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(12)
+        );
+        session.clear_context();
+        assert!(session.turn_memory.is_empty());
+        assert!(session.command_memory.is_empty());
+    }
+
+    #[test]
+    fn recent_session_turns_resolve_only_bounded_follow_up_references() {
+        let no_history = serde_json::json!({});
+        assert!(has_unresolved_reference("do that", &no_history));
+        assert!(has_unresolved_reference("show it", &no_history));
+
+        let with_history = serde_json::json!({
+            "session_turns": [{
+                "request": "where is the project folder on the D drive",
+                "outcome": "Please clarify whether subdirectories should be included."
+            }]
+        });
+        assert!(!has_unresolved_reference("do that", &with_history));
+        assert!(!has_unresolved_reference("show it", &with_history));
+        assert!(!has_unresolved_reference(
+            "search this folder recursively",
+            &serde_json::json!({
+                "session_turns": [{
+                    "request": "find the folder named project-zeta",
+                    "outcome": "The folder search needs a scope."
+                }]
+            })
+        ));
+    }
+
+    #[test]
+    fn multi_step_shell_plans_are_bounded_and_risk_aggregated() {
+        assert_eq!(
+            split_planned_commands("Get-Location; Write-Output 'a;b'; Get-Process").len(),
+            3
+        );
+        assert_eq!(
+            split_planned_commands(
+                "Get-ChildItem | Where-Object { $_.Name -eq 'a;b' }; Get-Location"
+            )
+            .len(),
+            2
+        );
+        if cfg!(windows) {
+            assert_eq!(
+                split_planned_commands(r"Get-Item C:\work\; Get-Location").len(),
+                2
+            );
+        } else {
+            assert_eq!(split_planned_commands(r"printf a\;b; pwd").len(), 2);
+        }
+
+        let plan = plan_from_input(
+            "show the current location and create an archive folder",
+            &[
+                r#"{"kind":"shell_command","payload":"Get-Location; New-Item -ItemType Directory -Path archive-8f31"}"#,
+            ],
+            serde_json::json!({}),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert_eq!(plan.risk, RiskLevel::Medium);
+
+        let too_many = plan_from_input(
+            "run the requested workflow",
+            &[
+                r#"{"kind":"shell_command","payload":"echo 1; echo 2; echo 3; echo 4; echo 5"}"#,
+                r#"{"kind":"clarification","message":"Which four steps are most important?"}"#,
+            ],
+            serde_json::json!({}),
+        );
+        assert_eq!(too_many.action, ProviderPlanAction::Fallback);
+        assert_eq!(too_many.diagnostics.as_ref().unwrap().retry_count, 1);
     }
 
     #[test]
@@ -2137,6 +2433,66 @@ mod planner_tests {
         );
         assert_eq!(recursive.action, ProviderPlanAction::ShellCommand);
         assert_eq!(recursive.diagnostics.as_ref().unwrap().retry_count, 0);
+    }
+
+    #[test]
+    fn recursive_scope_accepts_quantified_and_split_subdirectory_language() {
+        for input in [
+            "find the fixture folder on d drive in all directories",
+            "include every folder",
+            "include all sub directories",
+            "include every sub folder",
+        ] {
+            assert!(request_has_recursive_scope(input), "{input}");
+        }
+        assert!(!request_has_recursive_scope(
+            "find the fixture folder at the drive root"
+        ));
+    }
+
+    #[test]
+    fn launch_validation_rejects_invented_paths_but_accepts_existing_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-launch-validation-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let existing = root.join("Aurora Workspace 8f31");
+        fs::create_dir_all(&existing).unwrap();
+        let missing = root.join("Invented Editor 8f31.exe");
+        let context = serde_json::json!({ "cwd": root });
+        let invalid = format!(
+            "Start-Process -FilePath '{}' -ArgumentList '{}'",
+            missing.display(),
+            existing.display()
+        );
+        assert_eq!(
+            nonexistent_launch_path(
+                "open an editor in the Aurora Workspace 8f31 folder",
+                &invalid,
+                &context,
+            ),
+            Some(missing.display().to_string())
+        );
+        let valid = format!("code '{}'", existing.display());
+        assert_eq!(
+            nonexistent_launch_path(
+                "open an editor in the Aurora Workspace 8f31 folder",
+                &valid,
+                &context,
+            ),
+            None
+        );
+        fs::remove_dir_all(
+            context
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+                .unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
