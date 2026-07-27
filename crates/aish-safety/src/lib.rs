@@ -152,6 +152,14 @@ pub fn classify_risk(command: &str) -> RiskDecision {
         };
     }
 
+    if is_read_only_netsh(command) {
+        return RiskDecision {
+            risk: RiskLevel::Low,
+            needs_confirmation: false,
+            reason: "Recognized read-only network inspection command.".to_string(),
+        };
+    }
+
     let read_only = [
         "cd",
         "pwd",
@@ -236,6 +244,30 @@ pub fn classify_risk(command: &str) -> RiskDecision {
                 .to_string(),
         }
     }
+}
+
+fn is_read_only_netsh(command: &str) -> bool {
+    let tokens = command
+        .split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|character: char| {
+                    matches!(character, '\'' | '"' | ',' | ';' | '(' | ')')
+                })
+                .to_ascii_lowercase()
+        })
+        .collect::<Vec<_>>();
+    let Some(program) = tokens.first() else {
+        return false;
+    };
+    matches!(program.as_str(), "netsh" | "netsh.exe")
+        && tokens.iter().any(|token| token == "show")
+        && !tokens.iter().any(|token| {
+            matches!(
+                token.as_str(),
+                "set" | "add" | "delete" | "reset" | "exec" | "dump"
+            )
+        })
 }
 
 fn is_read_only_powershell_conditional(
@@ -468,6 +500,7 @@ mod tests {
             "git branch",
             "cargo metadata --format-version 1 --no-deps",
             "test -f package.json",
+            "netsh interface ipv4 show interface",
         ] {
             assert_risk(command, RiskLevel::Low, false);
         }
@@ -484,6 +517,11 @@ mod tests {
         assert_risk("git branch-delete", RiskLevel::Medium, true);
         assert_risk("rustc --version-and-write", RiskLevel::Medium, true);
         assert_risk("dir /a & custom-tool run", RiskLevel::Medium, true);
+        assert_risk(
+            "netsh interface ipv4 set interface 12 metric=5",
+            RiskLevel::Medium,
+            true,
+        );
     }
 
     #[test]
