@@ -4580,10 +4580,16 @@ mod planner_tests {
 
     #[test]
     fn current_directory_reference_is_grounded_by_host_context() {
+        let command = if cfg!(windows) {
+            r#"{"kind":"shell_command","payload":"setx PATH \"%PATH%;%CD%\""}"#
+        } else {
+            r#"{"kind":"shell_command","payload":"export PATH=\"$PATH:$PWD\""}"#
+        };
+        let cwd = std::env::current_dir().unwrap();
         let plan = plan_from_input(
             "add this directory to PATH",
-            &[r#"{"kind":"shell_command","payload":"setx PATH \"%PATH%;%CD%\""}"#],
-            serde_json::json!({ "cwd": "C:\\workspace\\arbitrary" }),
+            &[command],
+            serde_json::json!({ "cwd": cwd }),
         );
         assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
         assert!(plan.needs_approval);
