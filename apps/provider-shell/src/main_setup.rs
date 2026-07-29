@@ -1,9 +1,12 @@
 mod logging;
+mod known_folders;
 mod model_registry;
 mod setup;
+mod theme;
 mod updater;
 
 use aish_ai::ModelProfile;
+use known_folders::KnownFolders;
 use model_registry::ModelRegistry;
 use aish_completion::demo_suggestions;
 use aish_context::inspect_current_project;
@@ -19,6 +22,7 @@ use std::env;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use theme::Theme;
 
 const CREATOR: &str = "Dawnlight Labs";
 const COPYRIGHT: &str = "Copyright (c) 2026 Dawnlight Labs. All rights reserved.";
@@ -38,6 +42,8 @@ struct ProviderState {
     pending: Option<PendingCommand>,
     session: ProviderSession,
     diagnostics: bool,
+    theme: Theme,
+    known_folders: KnownFolders,
 }
 
 #[derive(Debug)]
@@ -64,6 +70,8 @@ fn main() {
         pending: None,
         session: ProviderSession::default(),
         diagnostics: env::var("AISH_DIAGNOSTICS").ok().as_deref() == Some("1"),
+        theme: Theme::load(),
+        known_folders: KnownFolders::discover(),
     };
     if handle_headless_route() {
         return;
@@ -73,16 +81,20 @@ fn main() {
         return;
     }
 
-    println!("AiSH provider shell");
-    println!("version: {}", updater::current_version());
-    println!("{COPYRIGHT}");
+    println!("{}", state.theme.accent("AiSH provider shell"));
+    println!(
+        "{} {}",
+        state.theme.muted("version:"),
+        state.theme.command(updater::current_version())
+    );
+    println!("{}", state.theme.muted(COPYRIGHT));
     println!(
         "Mode: {}. Natural language is the default; use //command to force a literal shell command. Type /help for controls.",
         describe_provider_mode(&state.session.mode)
     );
 
     loop {
-        print!("{}> ", prompt_cwd(&state.session.mode));
+        print!("{}", state.theme.prompt(format!("{}> ", prompt_cwd(&state.session.mode))));
         let _ = io::stdout().flush();
 
         let mut input = String::new();
@@ -135,7 +147,7 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
     let mut parts = input.split_whitespace();
     match parts.next().unwrap_or_default() {
         "/exit" | "/quit" => return true,
-        "/help" => print_help(),
+        "/help" => print_help(&state.theme),
         "/setup" | "/install" => setup::run_interactive_install(false),
         "/update" => {
             if updater::run_update_flow() {
@@ -143,6 +155,38 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             }
         }
         "/version" => updater::print_version(),
+        "/theme" => match (parts.next(), parts.next()) {
+            (None, _) | (Some("status"), _) => {
+                println!("theme: {}", state.theme.name());
+                println!(
+                    "color output: {}",
+                    if state.theme.color_enabled() {
+                        "active"
+                    } else {
+                        "disabled by terminal or environment"
+                    }
+                );
+            }
+            (Some("list"), _) => {
+                for name in theme::preset_names() {
+                    let marker = if *name == state.theme.name() { "*" } else { " " };
+                    println!("{marker} {name}");
+                }
+            }
+            (Some("preview"), _) => state.theme.preview(),
+            (Some("use"), Some(name)) => match state.theme.use_preset(name) {
+                Ok(()) => {
+                    println!("theme: {}", state.theme.accent(state.theme.name()));
+                    state.theme.preview();
+                }
+                Err(error) => println!("{}", state.theme.error(error)),
+            },
+            (Some("off"), _) => match state.theme.use_preset("off") {
+                Ok(()) => println!("theme: off"),
+                Err(error) => println!("{}", state.theme.error(error)),
+            },
+            _ => println!("usage: /theme list | /theme use <name> | /theme preview | /theme status | /theme off"),
+        },
         "/ai" => set_mode(state, ProviderInputMode::AiRun),
         "/normal" => set_mode(state, ProviderInputMode::Normal),
         "/mode" => match parts.next() {
@@ -308,6 +352,8 @@ fn print_status(state: &ProviderState) {
     println!("os: {}", env::consts::OS);
     println!("shell: {}", shell_name());
     println!("model: {}", state.profile.label);
+    println!("theme: {}", state.theme.name());
+    println!("color_output: {}", state.theme.color_enabled());
     println!("model_path: {}", state.profile.model_path);
     println!("llama_cli: {}", state.profile.llama_cli_path);
     println!(
@@ -512,8 +558,13 @@ fn print_model_status(state: &ProviderState) {
 
 fn approve_pending(state: &mut ProviderState) {
     if let Some(pending) = state.pending.take() {
-        println!("approved: {} ({})", pending.command, pending.risk);
-        println!("reason: {}", pending.reason);
+        println!(
+            "{} {} ({})",
+            state.theme.success("approved:"),
+            state.theme.command(&pending.command),
+            state.theme.warning(&pending.risk)
+        );
+        println!("{} {}", state.theme.muted("reason:"), pending.reason);
         let outcome = run_planned_commands(&pending.command);
         print_empty_outcome(&outcome, false);
         logging::record_command(
@@ -543,7 +594,7 @@ fn approve_pending(state: &mut ProviderState) {
             },
         );
     } else {
-        println!("no pending command");
+        println!("{}", state.theme.warning("no pending command"));
     }
 }
 
@@ -561,14 +612,14 @@ fn cancel_pending(state: &mut ProviderState) {
             pending.intent.as_deref().unwrap_or(&pending.command),
             "pending shell action was cancelled",
         );
-        println!("pending command cancelled");
+        println!("{}", state.theme.warning("pending command cancelled"));
     } else {
-        println!("no pending command");
+        println!("{}", state.theme.warning("no pending command"));
     }
 }
 
-fn print_help() {
-    println!("AiSH slash commands:");
+fn print_help(theme: &Theme) {
+    println!("{}", theme.accent("AiSH slash commands:"));
     println!("  /mode                  show current mode");
     println!("  /mode normal           pass input through as shell commands");
     println!("  /mode ai               treat non-command input as AI Run requests");
@@ -579,6 +630,11 @@ fn print_help() {
     println!("  /model list            list enabled models");
     println!("  /model use <id>        persist and activate a discovered model");
     println!("  /model status          show model and runtime configuration");
+    println!("  /theme                 show active color theme");
+    println!("  /theme list            list cross-platform color themes");
+    println!("  /theme use <name>      persist and activate a theme");
+    println!("  /theme preview         preview semantic terminal colors");
+    println!("  /theme off             disable AiSH colors");
     println!("  /diagnostics on|off    toggle sanitized planner diagnostics");
     println!("  /version               show installed AiSH version");
     println!("  /update                check latest release and install after approval");
@@ -610,7 +666,7 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
         ProviderPlanAction::Noop => {}
         ProviderPlanAction::Error => {
             let error = plan.error.as_deref().unwrap_or(&plan.reason);
-            println!("AiSH error: {error}");
+            println!("{}", state.theme.error(format!("AiSH error: {error}")));
             state.session.record_turn(&plan.intent, error);
             logging::record_command(
                 Some(&plan.intent),
@@ -636,7 +692,12 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
         }
         ProviderPlanAction::ChangeDirectory => {
             let Some(target) = plan.target.as_deref() else {
-                println!("AiSH could not resolve a directory for that request.");
+                println!(
+                    "{}",
+                    state
+                        .theme
+                        .error("AiSH could not resolve a directory for that request.")
+                );
                 return;
             };
             match env::set_current_dir(target) {
@@ -644,7 +705,11 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                     let current =
                         env::current_dir().unwrap_or_else(|_| PathBuf::from(target));
                     let visible = user_facing_path(&current);
-                    println!("directory: {}", visible.display());
+                    println!(
+                        "{} {}",
+                        state.theme.success("directory:"),
+                        state.theme.command(visible.display().to_string())
+                    );
                     state.session.record_command(
                         Some(&plan.intent),
                         &visible.display().to_string(),
@@ -657,7 +722,12 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                     );
                 }
                 Err(error) => {
-                    println!("Could not enter that directory: {error}");
+                    println!(
+                        "{}",
+                        state
+                            .theme
+                            .error(format!("Could not enter that directory: {error}"))
+                    );
                     state
                         .session
                         .record_turn(&plan.intent, &format!("directory change failed: {error}"));
@@ -685,10 +755,18 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 reason: plan.reason.clone(),
             });
 
-            println!("AiSH needs approval: {}", risk_label(&plan.risk));
-            println!("reason: {}", plan.reason);
-            println!("command: {command}");
-            println!("type /approve or /cancel");
+            println!(
+                "{} {}",
+                state.theme.warning("AiSH needs approval:"),
+                state.theme.warning(risk_label(&plan.risk))
+            );
+            println!("{} {}", state.theme.muted("reason:"), plan.reason);
+            println!(
+                "{} {}",
+                state.theme.muted("command:"),
+                state.theme.command(command)
+            );
+            println!("{}", state.theme.accent("type /approve or /cancel"));
             state
                 .session
                 .record_turn(&plan.intent, &format!("approval required for: {command}"));
@@ -767,7 +845,13 @@ fn provider_context(state: &ProviderState) -> serde_json::Value {
     project.cwd = user_facing_path(Path::new(&project.cwd))
         .display()
         .to_string();
-    let base = serde_json::to_value(project).unwrap_or_else(|_| serde_json::json!({}));
+    let mut base = serde_json::to_value(project).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = base.as_object_mut() {
+        object.insert(
+            "known_folders".to_string(),
+            serde_json::to_value(&state.known_folders).unwrap_or_else(|_| serde_json::json!({})),
+        );
+    }
     build_provider_context(base, &state.session)
 }
 
@@ -1361,7 +1445,13 @@ mod tests {
 
     #[test]
     fn shell_router_intercepts_slash_controls_and_forced_literals_first() {
-        for input in ["/version", "/update", "/model list", "/diagnostics on"] {
+        for input in [
+            "/version",
+            "/update",
+            "/model list",
+            "/theme preview",
+            "/diagnostics on",
+        ] {
             assert_eq!(
                 classify_shell_input_with(input, &ProviderInputMode::AiRun, test_command_lookup),
                 ShellInputRoute::SlashCommand,

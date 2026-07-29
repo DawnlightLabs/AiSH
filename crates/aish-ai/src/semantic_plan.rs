@@ -6,8 +6,20 @@ use serde_json::{Map, Value};
 pub enum SemanticPlanKind {
     ShellCommand,
     ChangeDirectory,
+    FilesystemAction,
     Answer,
     Clarification,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemOperation {
+    CreateFile,
+    CreateDirectory,
+    Delete,
+    Rename,
+    Move,
+    Copy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,6 +33,10 @@ pub struct SemanticPlan {
     pub scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<FilesystemOperation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +124,11 @@ fn normalize_plan(value: Value) -> Result<SemanticPlan, String> {
         .ok_or_else(|| "plan is missing kind".to_string())?;
     let kind = normalize_kind(raw_kind)?;
     let payload = cleaned_field(object, &["payload", "command", "shell_command"]);
-    let target = cleaned_field(object, &["target", "path", "directory", "destination"]);
+    let destination = cleaned_field(object, &["destination", "new_name", "new_path", "to"]);
+    let mut target = cleaned_field(object, &["target", "path", "directory", "source"]);
+    if kind == SemanticPlanKind::ChangeDirectory && target.is_none() {
+        target = destination.clone();
+    }
     let scope = cleaned_field(object, &["scope", "search_scope", "root"]);
     let message = cleaned_field(
         object,
@@ -127,6 +147,10 @@ fn normalize_plan(value: Value) -> Result<SemanticPlan, String> {
         target,
         scope,
         message,
+        operation: string_field(object, &["operation", "filesystem_operation", "op"])
+            .map(normalize_filesystem_operation)
+            .transpose()?,
+        destination,
     };
     validate_plan(plan)
 }
@@ -139,6 +163,23 @@ fn validate_plan(plan: SemanticPlan) -> Result<SemanticPlan, String> {
         }
         SemanticPlanKind::ChangeDirectory if !present(&plan.target) => {
             Err("change_directory plan is missing target".to_string())
+        }
+        SemanticPlanKind::FilesystemAction
+            if plan.operation.is_none() || !present(&plan.target) =>
+        {
+            Err("filesystem_action plan requires operation and target".to_string())
+        }
+        SemanticPlanKind::FilesystemAction
+            if matches!(
+                plan.operation,
+                Some(
+                    FilesystemOperation::Rename
+                        | FilesystemOperation::Move
+                        | FilesystemOperation::Copy
+                )
+            ) && !present(&plan.destination) =>
+        {
+            Err("filesystem_action operation requires destination".to_string())
         }
         SemanticPlanKind::Answer | SemanticPlanKind::Clarification if !present(&plan.message) => {
             Err("response plan is missing message".to_string())
@@ -156,9 +197,27 @@ fn normalize_kind(value: &str) -> Result<SemanticPlanKind, String> {
         "change_directory" | "change_dir" | "directory" | "navigate" | "cd" => {
             Ok(SemanticPlanKind::ChangeDirectory)
         }
+        "filesystem_action" | "filesystem" | "file_action" | "file_operation" => {
+            Ok(SemanticPlanKind::FilesystemAction)
+        }
         "answer" | "fallback" | "fallback_message" | "explanation" => Ok(SemanticPlanKind::Answer),
         "clarification" | "clarify" | "question" => Ok(SemanticPlanKind::Clarification),
         _ => Err(format!("unsupported plan kind: {value}")),
+    }
+}
+
+fn normalize_filesystem_operation(value: &str) -> Result<FilesystemOperation, String> {
+    let normalized = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    match normalized.as_str() {
+        "create_file" | "new_file" | "touch" => Ok(FilesystemOperation::CreateFile),
+        "create_directory" | "create_folder" | "new_directory" | "new_folder" | "mkdir" => {
+            Ok(FilesystemOperation::CreateDirectory)
+        }
+        "delete" | "remove" | "erase" => Ok(FilesystemOperation::Delete),
+        "rename" => Ok(FilesystemOperation::Rename),
+        "move" => Ok(FilesystemOperation::Move),
+        "copy" => Ok(FilesystemOperation::Copy),
+        _ => Err(format!("unsupported filesystem operation: {value}")),
     }
 }
 
@@ -311,5 +370,31 @@ mod tests {
         assert!(truncated.likely_incomplete);
         assert!(parse_semantic_plan("Run git status").is_err());
         assert!(parse_semantic_plan(r#"{"kind":"shell_command","payload":12}"#).is_err());
+    }
+
+    #[test]
+    fn parses_typed_filesystem_actions_and_requires_destinations() {
+        let create = parse_semantic_plan(
+            r#"{"kind":"filesystem_action","operation":"create_directory","target":"Alpha Beta","scope":"desktop"}"#,
+        )
+        .unwrap();
+        assert_eq!(create.plan.kind, SemanticPlanKind::FilesystemAction);
+        assert_eq!(
+            create.plan.operation,
+            Some(FilesystemOperation::CreateDirectory)
+        );
+        assert_eq!(create.plan.target.as_deref(), Some("Alpha Beta"));
+
+        let rename = parse_semantic_plan(
+            r#"{"kind":"file_operation","operation":"rename","source":"old-name.txt","new_name":"New Name.txt"}"#,
+        )
+        .unwrap();
+        assert_eq!(rename.plan.operation, Some(FilesystemOperation::Rename));
+        assert_eq!(rename.plan.destination.as_deref(), Some("New Name.txt"));
+
+        assert!(parse_semantic_plan(
+            r#"{"kind":"filesystem_action","operation":"move","target":"artifact.zip"}"#
+        )
+        .is_err());
     }
 }

@@ -4,6 +4,7 @@ pub(crate) const SEMANTIC_PLAN_JSON_SCHEMA: &str = r#"{
   "oneOf": [
     {"type":"object","properties":{"kind":{"const":"shell_command"},"payload":{"type":"string","minLength":1}},"required":["kind","payload"],"additionalProperties":false},
     {"type":"object","properties":{"kind":{"const":"change_directory"},"target":{"type":"string","minLength":1},"scope":{"type":"string"}},"required":["kind","target"],"additionalProperties":false},
+    {"type":"object","properties":{"kind":{"const":"filesystem_action"},"operation":{"enum":["create_file","create_directory","delete","rename","move","copy"]},"target":{"type":"string","minLength":1},"destination":{"type":"string","minLength":1},"scope":{"type":"string"}},"required":["kind","operation","target"],"additionalProperties":false},
     {"type":"object","properties":{"kind":{"const":"answer"},"message":{"type":"string","minLength":1}},"required":["kind","message"],"additionalProperties":false},
     {"type":"object","properties":{"kind":{"const":"clarification"},"message":{"type":"string","minLength":1}},"required":["kind","message"],"additionalProperties":false}
   ]
@@ -11,10 +12,15 @@ pub(crate) const SEMANTIC_PLAN_JSON_SCHEMA: &str = r#"{
 
 pub(crate) const SEMANTIC_PLAN_GBNF: &str = r#"
 root ::= plan ws trailer?
-plan ::= shell | navigation | navigation-scoped | answer | clarification
+plan ::= shell | navigation | navigation-scoped | filesystem | filesystem-destination | filesystem-scoped | filesystem-destination-scoped | answer | clarification
 shell ::= "{" ws "\"kind\"" ws ":" ws "\"shell_command\"" ws "," ws "\"payload\"" ws ":" ws string ws "}" ws
 navigation ::= "{" ws "\"kind\"" ws ":" ws "\"change_directory\"" ws "," ws "\"target\"" ws ":" ws string ws "}" ws
 navigation-scoped ::= "{" ws "\"kind\"" ws ":" ws "\"change_directory\"" ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"scope\"" ws ":" ws string ws "}" ws
+filesystem ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-operation ws "," ws "\"target\"" ws ":" ws string ws "}" ws
+filesystem-destination ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-operation ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"destination\"" ws ":" ws string ws "}" ws
+filesystem-scoped ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-operation ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"scope\"" ws ":" ws string ws "}" ws
+filesystem-destination-scoped ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-operation ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"destination\"" ws ":" ws string ws "," ws "\"scope\"" ws ":" ws string ws "}" ws
+filesystem-operation ::= "\"create_file\"" | "\"create_directory\"" | "\"delete\"" | "\"rename\"" | "\"move\"" | "\"copy\""
 answer ::= "{" ws "\"kind\"" ws ":" ws "\"answer\"" ws "," ws "\"message\"" ws ":" ws string ws "}" ws
 clarification ::= "{" ws "\"kind\"" ws ":" ws "\"clarification\"" ws "," ws "\"message\"" ws ":" ws string ws "}" ws
 string ::= "\"" char+ "\""
@@ -104,8 +110,16 @@ mod tests {
     #[test]
     fn schema_is_valid_and_grammar_matches_contract() {
         let schema: serde_json::Value = serde_json::from_str(SEMANTIC_PLAN_JSON_SCHEMA).unwrap();
-        assert_eq!(schema["oneOf"].as_array().map(Vec::len), Some(4));
-        for field in ["kind", "payload", "target", "scope", "message"] {
+        assert_eq!(schema["oneOf"].as_array().map(Vec::len), Some(5));
+        for field in [
+            "kind",
+            "payload",
+            "target",
+            "scope",
+            "message",
+            "operation",
+            "destination",
+        ] {
             assert!(SEMANTIC_PLAN_GBNF.contains(field));
         }
         assert!(SEMANTIC_PLAN_GBNF.contains("<|im_start|>"));
