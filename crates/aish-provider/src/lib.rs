@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 mod navigation;
+mod target_resolution;
 pub use navigation::{
     infer_direct_child_from_request, infer_existing_target_from_request, resolve_navigation_target,
     NavigationResolution,
 };
+use target_resolution::{filesystem_operation_matches_request, ground_filesystem_mutation};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -385,7 +387,27 @@ fn plan_ai_run_with(
     profile: ModelProfile,
     runner: impl Fn(ModelRunRequest) -> Result<ModelRunResult, String>,
 ) -> ProviderPlan {
-    let system_prompt = build_semantic_plan_system_prompt();
+    if request_is_parent_navigation(input) {
+        return semantic_to_provider_plan(
+            input,
+            SemanticPlan {
+                kind: SemanticPlanKind::ChangeDirectory,
+                payload: None,
+                target: Some("..".to_string()),
+                scope: Some("current".to_string()),
+                message: None,
+                operation: None,
+                destination: None,
+            },
+            request.surface,
+            &request.context_json,
+            None,
+            None,
+            None,
+        );
+    }
+    let base_system_prompt = build_semantic_plan_system_prompt();
+    let mut system_prompt = base_system_prompt.clone();
     let mut prompt = constrain_plan_prompt(
         build_semantic_plan_prompt(input, &request.context_json),
         input,
@@ -453,7 +475,11 @@ fn plan_ai_run_with(
             Ok(parsed) => {
                 let mut plan = parsed.plan;
                 ground_navigation_plan(&mut plan, input, &request.context_json);
+                ground_filesystem_mutation(&mut plan, input, &request.context_json);
                 normalize_shell_plan_for_host(&mut plan, input);
+                ground_current_directory_observation(&mut plan, input, &request.context_json);
+                ground_directory_size_observation(&mut plan, input, &request.context_json);
+                ground_count_observation(&mut plan, input, &request.context_json);
                 if let Err(error) = validate_model_plan(&plan, input, &request.context_json) {
                     parse_errors.push(format!("plan validation: {error}"));
                     let rejected_plan = serde_json::to_string(&plan)
@@ -463,6 +489,10 @@ fn plan_ai_run_with(
                         build_repair_prompt(input, &request.context_json, &rejected),
                         input,
                         &request.context_json,
+                    );
+                    system_prompt = format!(
+                        "{base_system_prompt}\n\n{}",
+                        validation_repair_system_constraint(&plan, input, &error)
                     );
                     last_validation_error = Some(error);
                     last_result = Some(result);
@@ -537,9 +567,31 @@ fn constrain_plan_prompt(mut prompt: String, input: &str, context: &serde_json::
         prompt.push_str(
             "\n\nHost request class: failed-command recovery. Use the supplied failed command, exit code, and stderr as the evidence. Return shell_command only for a clear typo correction; otherwise return kind answer with a concise diagnosis of at most two sentences. Do not repeat the failed command, invent a cause, or include commands or step-by-step instructions in the answer.",
         );
+    } else if request_is_navigation_intent_with_context(input, context) {
+        prompt.push_str(
+            "\n\nHost request class: navigation. Return kind change_directory with the user's requested directory reference and optional search scope. Never return shell_command or filesystem_action for navigation.",
+        );
     } else if is_explanation_request(input) && !has_unresolved_reference(input, context) {
         prompt.push_str(
             "\n\nHost request class: explanation. Return kind answer with a concise explanatory message. Do not return shell_command and do not inspect local state.",
+        );
+    } else if is_follow_up_refinement(input, context) {
+        prompt.push_str(
+            "\n\nHost request class: follow-up refinement. Revise the most recent successful session command to apply only the requested presentation, unit, filter, ordering, or scope change. Preserve the earlier objective and do not invent a different task.",
+        );
+    } else if request_is_state_change_intent(input) {
+        if request_is_filesystem_change_intent(input) {
+            prompt.push_str(
+                "\n\nHost request class: filesystem state change. Return kind filesystem_action with the requested operation and unresolved user target references. Do not invent completed paths or return shell_command. Return clarification only when a required target or destination is genuinely missing. The host resolves paths and controls risk and approval.",
+            );
+        } else {
+            prompt.push_str(
+                "\n\nHost request class: non-filesystem state change. Return exactly one JSON object with kind shell_command and a payload that directly performs the requested change using the declared shell family. Do not return filesystem_action or substitute a read-only inspection. Return clarification only when a required target or value is genuinely missing. The host controls risk and approval.",
+            );
+        }
+    } else if request_is_observation_intent(input) {
+        prompt.push_str(
+            "\n\nHost request class: observation. Return kind shell_command that directly inspects the requested state. Preserve any named tool and filters. When no location is stated, operate from the supplied current working directory without inventing an absolute path. Do not add recursion or broader scope unless requested.",
         );
     }
     if mentions_file_object(input) {
@@ -553,7 +605,53 @@ fn constrain_plan_prompt(mut prompt: String, input: &str, context: &serde_json::
             );
         }
     }
+    if is_cleanup_request(input) {
+        prompt.push_str(
+            "\n\nHost request class: cleanup. Preserve every explicitly requested cleanup location. Remove only eligible contents, not the containing directory, and tolerate individual entries that are in use or not permitted. Use the declared shell dialect and split distinct locations into bounded ordered commands when needed.",
+        );
+    }
     prompt
+}
+
+fn validation_repair_system_constraint(
+    rejected_plan: &SemanticPlan,
+    input: &str,
+    error: &str,
+) -> String {
+    if rejected_plan.kind == SemanticPlanKind::FilesystemAction
+        && !filesystem_operation_matches_request(rejected_plan.operation.as_ref(), input)
+    {
+        if request_is_navigation_intent(input) {
+            return "Correction for this retry: the rejected plan incorrectly used filesystem_action for navigation. Return change_directory with the directory reference from the user's request and an optional grounded search scope. Never return shell_command, filesystem_action, answer, or clarification unless the directory reference is genuinely missing."
+                .to_string();
+        }
+        if request_is_state_change_intent(input) {
+            return "Correction for this retry: the rejected plan incorrectly used filesystem_action for a non-filesystem state change. Return exactly one JSON object whose first field is \"kind\":\"shell_command\" and whose only other field is \"payload\". The payload must directly perform the requested change using the declared shell family. Do not substitute a read-only inspection and do not return filesystem_action. The host controls risk and approval."
+                .to_string();
+        }
+        return format!(
+            "Correction for this retry: the rejected plan incorrectly used filesystem_action even though the request does not ask to create, delete, rename, move, or copy anything. Return shell_command for the requested observation. Do not return filesystem_action, change_directory, answer, or clarification. Preserve any named tool and requested operation. When no location is stated, operate from the supplied current working directory without inventing an absolute path. Do not add recursive traversal or a broader scope unless the user requested it. The payload must directly perform the requested observation using the declared shell family.{}",
+            observation_retry_requirements(input)
+        );
+    }
+
+    match rejected_plan.kind {
+        SemanticPlanKind::ShellCommand => format!(
+            "Correction for this retry: return a different shell_command that fixes this host validation error: {error}"
+        ),
+        SemanticPlanKind::ChangeDirectory => format!(
+            "Correction for this retry: return a corrected change_directory plan that fixes this host validation error: {error}"
+        ),
+        SemanticPlanKind::FilesystemAction => format!(
+            "Correction for this retry: return a corrected filesystem_action plan that fixes this host validation error: {error}"
+        ),
+        SemanticPlanKind::Answer => format!(
+            "Correction for this retry: return a corrected answer plan that fixes this host validation error: {error}"
+        ),
+        SemanticPlanKind::Clarification => format!(
+            "Correction for this retry: return a corrected clarification plan that fixes this host validation error: {error}"
+        ),
+    }
 }
 
 fn normalize_shell_plan_for_host(plan: &mut SemanticPlan, input: &str) {
@@ -571,6 +669,427 @@ fn normalize_shell_plan_for_host(plan: &mut SemanticPlan, input: &str) {
     plan.payload = Some(normalized);
 }
 
+fn ground_current_directory_observation(
+    plan: &mut SemanticPlan,
+    input: &str,
+    context: &serde_json::Value,
+) {
+    if plan.kind != SemanticPlanKind::ShellCommand || !request_targets_current_directory(input) {
+        return;
+    }
+    let Some(command) = plan.payload.as_ref() else {
+        return;
+    };
+    if classify_risk(command).risk != RiskLevel::Low {
+        return;
+    }
+    let Some(cwd) = context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+    else {
+        return;
+    };
+    let cwd = cwd.to_string_lossy();
+    let mut grounded = command.clone();
+    for token in shell_like_tokens(command) {
+        let candidate = token.trim_matches(|character: char| {
+            matches!(
+                character,
+                '\'' | '"' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+            )
+        });
+        if candidate.is_empty() || candidate.contains(['*', '?', '$', '%']) {
+            continue;
+        }
+        let path = Path::new(candidate);
+        if path.is_absolute() && !path.exists() {
+            grounded = grounded.replace(candidate, &cwd);
+        }
+    }
+    plan.payload = Some(grounded);
+}
+
+fn ground_directory_size_observation(
+    plan: &mut SemanticPlan,
+    input: &str,
+    context: &serde_json::Value,
+) {
+    if !requests_directory_size_ranking(input) {
+        return;
+    }
+    let Some(cwd) = context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+    else {
+        return;
+    };
+    let depth = requested_traversal_depth(input).unwrap_or(3).clamp(1, 10);
+    let count = requested_rank_count(input).unwrap_or(10).clamp(1, 100);
+    plan.kind = SemanticPlanKind::ShellCommand;
+    plan.payload = Some(directory_size_observation_command(&cwd, depth, count));
+    plan.target = None;
+    plan.scope = None;
+    plan.message = None;
+    plan.operation = None;
+    plan.destination = None;
+}
+
+#[cfg(windows)]
+fn directory_size_observation_command(cwd: &Path, depth: u32, count: u32) -> String {
+    let path = cwd.to_string_lossy().replace('\'', "''");
+    format!(
+        "Get-ChildItem -LiteralPath '{path}' -Directory -Recurse -Depth {depth} -Force -ErrorAction SilentlyContinue | ForEach-Object {{ $bytes = (Get-ChildItem -LiteralPath $_.FullName -File -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum; [PSCustomObject]@{{ FullName = $_.FullName; SizeGB = [math]::Round(($bytes / 1GB), 3) }} }} | Sort-Object SizeGB -Descending | Select-Object -First {count}"
+    )
+}
+
+#[cfg(all(not(windows), target_os = "macos"))]
+fn directory_size_observation_command(cwd: &Path, depth: u32, count: u32) -> String {
+    let path = cwd.to_string_lossy().replace('\'', "'\\''");
+    format!(
+        "du -k -d {depth} '{path}' 2>/dev/null | sort -nr | head -n {count} | awk '{{ size=$1; $1=\"\"; sub(/^[[:space:]]+/, \"\", $0); printf \"%.3f GB\\t%s\\n\", size/1048576, $0 }}'"
+    )
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn directory_size_observation_command(cwd: &Path, depth: u32, count: u32) -> String {
+    let path = cwd.to_string_lossy().replace('\'', "'\\''");
+    format!(
+        "du -k --max-depth={depth} '{path}' 2>/dev/null | sort -nr | head -n {count} | awk '{{ size=$1; $1=\"\"; sub(/^[[:space:]]+/, \"\", $0); printf \"%.3f GB\\t%s\\n\", size/1048576, $0 }}'"
+    )
+}
+
+fn request_targets_current_directory(input: &str) -> bool {
+    let words = input
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    words.iter().any(|word| word == "here")
+        || words.windows(2).any(|pair| {
+            matches!(pair[0].as_str(), "this" | "current")
+                && matches!(
+                    pair[1].as_str(),
+                    "folder" | "directory" | "project" | "location"
+                )
+        })
+}
+
+fn observation_retry_requirements(input: &str) -> String {
+    let mut requirements = Vec::new();
+    if let Some(depth) = requested_traversal_depth(input) {
+        requirements.push(format!(
+            " Preserve the requested maximum traversal depth of {depth} levels."
+        ));
+    }
+    if let Some(count) = requested_rank_count(input) {
+        requirements.push(format!(" Return only the requested top {count} results."));
+    }
+    if requests_directory_size_ranking(input) {
+        requirements.push(
+            " Calculate each directory's aggregate contained-file size; do not sort directory objects by a Length property."
+                .to_string(),
+        );
+    }
+    if requests_gigabyte_units(input) {
+        requirements.push(" Express the resulting sizes in GB.".to_string());
+    }
+    requirements.concat()
+}
+
+fn requested_traversal_depth(input: &str) -> Option<u32> {
+    let words = request_words(input);
+    words.windows(2).find_map(|pair| {
+        if matches!(pair[0].as_str(), "depth" | "level" | "levels") {
+            pair[1].parse().ok()
+        } else if matches!(pair[1].as_str(), "level" | "levels") {
+            pair[0].parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn requested_rank_count(input: &str) -> Option<u32> {
+    let words = request_words(input);
+    words.windows(2).find_map(|pair| {
+        if matches!(
+            pair[1].as_str(),
+            "largest" | "biggest" | "smallest" | "newest" | "oldest"
+        ) {
+            pair[0].parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn requests_directory_size_ranking(input: &str) -> bool {
+    let words = request_words(input);
+    words
+        .iter()
+        .any(|word| matches!(word.as_str(), "largest" | "biggest" | "size" | "sizes"))
+        && words.iter().any(|word| {
+            matches!(
+                word.as_str(),
+                "folder" | "folders" | "directory" | "directories"
+            )
+        })
+}
+
+fn requests_gigabyte_units(input: &str) -> bool {
+    request_words(input)
+        .iter()
+        .any(|word| matches!(word.as_str(), "gb" | "gigabyte" | "gigabytes"))
+}
+
+fn request_words(input: &str) -> Vec<String> {
+    input
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn request_is_navigation_intent(input: &str) -> bool {
+    let words = request_words(input);
+    let first = words.first().map(String::as_str).unwrap_or_default();
+    let has_directory_object = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "directory" | "directories" | "folder" | "folders"
+        )
+    });
+    let has_file_object = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "file" | "files"));
+    let has_destination_preposition = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "to" | "into"));
+    let directional = matches!(first, "cd" | "enter" | "navigate")
+        || (matches!(first, "go" | "switch" | "change") && has_destination_preposition);
+    let parent_motion = matches!(first, "move" | "go")
+        && !has_file_object
+        && words
+            .iter()
+            .any(|word| matches!(word.as_str(), "up" | "parent"));
+    let open_directory = first == "open" && has_directory_object;
+    let compound_directory_entry = has_directory_object
+        && !has_file_object
+        && words
+            .iter()
+            .any(|word| matches!(word.as_str(), "enter" | "navigate"));
+    directional || parent_motion || open_directory || compound_directory_entry
+}
+
+fn request_is_parent_navigation(input: &str) -> bool {
+    let words = request_words(input);
+    let first = words.first().map(String::as_str).unwrap_or_default();
+    matches!(first, "move" | "go")
+        && !words
+            .iter()
+            .any(|word| matches!(word.as_str(), "file" | "files"))
+        && words
+            .iter()
+            .any(|word| matches!(word.as_str(), "up" | "parent"))
+}
+
+fn request_is_navigation_intent_with_context(input: &str, context: &serde_json::Value) -> bool {
+    if request_is_navigation_intent(input) {
+        return true;
+    }
+    let first = request_words(input).first().cloned().unwrap_or_default();
+    if first != "open" {
+        return false;
+    }
+    context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .filter(|cwd| cwd.is_dir())
+        .and_then(|cwd| infer_existing_target_from_request(input, &cwd))
+        .is_some()
+}
+
+fn request_is_observation_intent(input: &str) -> bool {
+    if request_is_navigation_intent(input) {
+        return false;
+    }
+    matches!(
+        request_words(input).first().map(String::as_str),
+        Some("show" | "find" | "list" | "check" | "count" | "search" | "test" | "display")
+    )
+}
+
+fn request_is_state_change_intent(input: &str) -> bool {
+    if request_is_navigation_intent(input) {
+        return false;
+    }
+    if request_is_filesystem_change_intent(input) {
+        return true;
+    }
+    matches!(
+        request_words(input).first().map(String::as_str),
+        Some(
+            "install"
+                | "uninstall"
+                | "set"
+                | "add"
+                | "remove"
+                | "delete"
+                | "kill"
+                | "stop"
+                | "start"
+                | "restart"
+                | "update"
+                | "upgrade"
+                | "clear"
+                | "clean"
+                | "purge"
+                | "write"
+                | "append"
+        )
+    )
+}
+
+fn request_is_filesystem_change_intent(input: &str) -> bool {
+    let filesystem_change = [
+        aish_ai::FilesystemOperation::CreateFile,
+        aish_ai::FilesystemOperation::CreateDirectory,
+        aish_ai::FilesystemOperation::Delete,
+        aish_ai::FilesystemOperation::Rename,
+        aish_ai::FilesystemOperation::Move,
+        aish_ai::FilesystemOperation::Copy,
+    ]
+    .iter()
+    .any(|operation| filesystem_operation_matches_request(Some(operation), input));
+    filesystem_change
+}
+
+fn ground_count_observation(plan: &mut SemanticPlan, input: &str, context: &serde_json::Value) {
+    let words = request_words(input);
+    if words.first().map(String::as_str) != Some("count") {
+        return;
+    }
+    let object = if words
+        .iter()
+        .any(|word| matches!(word.as_str(), "file" | "files"))
+    {
+        Some("file")
+    } else if words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "folder" | "folders" | "directory" | "directories"
+        )
+    }) {
+        Some("directory")
+    } else {
+        None
+    };
+    let Some(object) = object else {
+        return;
+    };
+    let Some(cwd) = context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+    else {
+        return;
+    };
+    let recursive = request_has_recursive_scope(input);
+    let command = count_observation_command(&cwd, object, recursive);
+    plan.kind = SemanticPlanKind::ShellCommand;
+    plan.payload = Some(command);
+    plan.target = None;
+    plan.scope = None;
+    plan.message = None;
+    plan.operation = None;
+    plan.destination = None;
+}
+
+fn count_observation_command(cwd: &Path, object: &str, recursive: bool) -> String {
+    if cfg!(windows) {
+        let path = format!("'{}'", cwd.to_string_lossy().replace('\'', "''"));
+        let object_switch = if object == "directory" {
+            "-Directory"
+        } else {
+            "-File"
+        };
+        let recursion = if recursive { " -Recurse" } else { "" };
+        format!(
+            "Get-ChildItem -LiteralPath {path} {object_switch}{recursion} -Force -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"
+        )
+    } else {
+        let path = format!("'{}'", cwd.to_string_lossy().replace('\'', "'\\''"));
+        let depth = if recursive { "" } else { " -maxdepth 1" };
+        let object_flag = if object == "directory" { "d" } else { "f" };
+        format!("find {path} -mindepth 1{depth} -type {object_flag} -print | wc -l")
+    }
+}
+
+fn validate_observation_constraints(input: &str, command: &str) -> Result<(), String> {
+    let lower = command.to_ascii_lowercase();
+    if let Some(depth) = requested_traversal_depth(input) {
+        let preserves_depth = [
+            format!("-depth {depth}"),
+            format!("-maxdepth {depth}"),
+            format!("--max-depth={depth}"),
+            format!("-d {depth}"),
+            format!("depth -le {depth}"),
+            format!("level -le {depth}"),
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker));
+        if !preserves_depth {
+            return Err(format!(
+                "The command must preserve the requested maximum traversal depth of {depth} levels."
+            ));
+        }
+    }
+    if let Some(count) = requested_rank_count(input) {
+        let preserves_count = [
+            format!("-first {count}"),
+            format!("-head {count}"),
+            format!("head -n {count}"),
+            format!("head -{count}"),
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker));
+        if !preserves_count {
+            return Err(format!(
+                "The command must preserve the requested top-result count of {count}."
+            ));
+        }
+    }
+    if requests_directory_size_ranking(input) {
+        let aggregates_size = lower.contains("du ")
+            || (lower.contains("measure-object")
+                && lower.contains("length")
+                && lower.contains("sum"))
+            || (lower.contains("find ")
+                && (lower.contains("stat ") || lower.contains("-printf"))
+                && lower.contains("awk"));
+        if !aggregates_size {
+            return Err(
+                "Directory-size ranking must aggregate contained file sizes; directory objects do not have a meaningful Length value."
+                    .to_string(),
+            );
+        }
+    }
+    if requests_gigabyte_units(input)
+        && !["gb", "gigabyte", "1073741824"]
+            .iter()
+            .any(|marker| lower.contains(marker))
+    {
+        return Err("The command must express the requested sizes in GB.".to_string());
+    }
+    Ok(())
+}
+
 fn normalize_shell_command_for_host(command: &str, input: &str) -> String {
     let command = normalize_powershell_environment_references(&command, input);
     if is_managed_cmd_command(&command) || !contains_cmd_slash_switch(&command) {
@@ -581,6 +1100,7 @@ fn normalize_shell_command_for_host(command: &str, input: &str) -> String {
 }
 
 fn normalize_powershell_environment_references(command: &str, input: &str) -> String {
+    let command = normalize_percent_environment_references(command);
     let mut result = String::with_capacity(command.len());
     let mut characters = command.chars().peekable();
     let mut single_quoted = false;
@@ -615,6 +1135,52 @@ fn normalize_powershell_environment_references(command: &str, input: &str) -> St
     result
 }
 
+fn normalize_percent_environment_references(command: &str) -> String {
+    let characters = command.chars().collect::<Vec<_>>();
+    let mut result = String::with_capacity(command.len());
+    let mut index = 0;
+    let mut single_quoted = false;
+    while index < characters.len() {
+        let character = characters[index];
+        if character == '\'' {
+            single_quoted = !single_quoted;
+            result.push(character);
+            index += 1;
+            continue;
+        }
+        if character != '%' || single_quoted {
+            result.push(character);
+            index += 1;
+            continue;
+        }
+
+        let start = index + 1;
+        let mut end = start;
+        while end < characters.len()
+            && (characters[end].is_ascii_alphanumeric() || characters[end] == '_')
+        {
+            end += 1;
+        }
+        if end > start && characters.get(end) == Some(&'%') {
+            let name = characters[start..end].iter().collect::<String>();
+            if name.eq_ignore_ascii_case("CD") {
+                result.push_str("$PWD");
+                index = end + 1;
+                continue;
+            }
+            if std::env::var_os(&name).is_some() {
+                result.push_str("$env:");
+                result.push_str(&name);
+                index = end + 1;
+                continue;
+            }
+        }
+        result.push(character);
+        index += 1;
+    }
+    result
+}
+
 fn is_managed_cmd_command(command: &str) -> bool {
     let command = command.trim_start().to_ascii_lowercase();
     command.starts_with("cmd.exe /d /s /c '") || command.starts_with("cmd /d /s /c '")
@@ -634,6 +1200,29 @@ fn ground_navigation_plan(plan: &mut SemanticPlan, input: &str, context: &serde_
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
     let home = home_dir();
+    if request_is_parent_navigation(input) {
+        plan.kind = SemanticPlanKind::ChangeDirectory;
+        plan.payload = None;
+        plan.operation = None;
+        plan.target = Some("..".to_string());
+        plan.destination = None;
+        plan.message = None;
+        plan.scope = Some("current".to_string());
+        return;
+    }
+    let navigation_intent = request_is_navigation_intent_with_context(input, context);
+    if navigation_intent && plan.kind != SemanticPlanKind::ChangeDirectory {
+        if let Some(inferred) = infer_existing_target_from_request(input, &cwd) {
+            plan.kind = SemanticPlanKind::ChangeDirectory;
+            plan.payload = None;
+            plan.operation = None;
+            plan.target = Some(inferred);
+            plan.destination = None;
+            plan.message = None;
+            plan.scope = Some("current".to_string());
+            return;
+        }
+    }
     if ground_direct_home_target(plan, input, &cwd, &home) {
         return;
     }
@@ -749,6 +1338,22 @@ fn validate_model_plan(
     match plan.kind {
         SemanticPlanKind::ShellCommand => {
             let command = plan.payload.as_deref().unwrap_or_default();
+            if request_is_navigation_intent_with_context(input, context)
+                && !is_navigation_shell_command(command)
+            {
+                return Err(
+                    "A navigation request must return change_directory rather than an observational shell command."
+                        .to_string(),
+                );
+            }
+            if request_is_state_change_intent(input)
+                && classify_risk(command).risk == RiskLevel::Low
+            {
+                return Err(
+                    "A state-changing request must not be replaced with a read-only observation. Return a command that performs the requested change so host approval can be applied, or ask a clarification when a required value is missing."
+                        .to_string(),
+                );
+            }
             let commands = split_planned_commands(command);
             if commands.is_empty() || commands.len() > 4 {
                 return Err(
@@ -770,6 +1375,12 @@ fn validate_model_plan(
                             .to_string(),
                     )
                 };
+            }
+            if is_cleanup_request(input) && command_deletes_environment_container(command) {
+                return Err(
+                    "A cleanup plan must remove eligible contents while preserving the environment-owned container directory."
+                        .to_string(),
+                );
             }
             if let Some(target) = explicitly_named_target(input) {
                 if !command_preserves_explicit_target(command, &target) {
@@ -796,6 +1407,7 @@ fn validate_model_plan(
                         .to_string(),
                 );
             }
+            validate_observation_constraints(input, command)?;
             if repeats_failed_command(command, context) {
                 return Err(
                     "A recovery plan must not repeat the command that already failed; return an explanation or a corrected command."
@@ -808,7 +1420,10 @@ fn validate_model_plan(
                         .to_string(),
                 );
             }
-            if command_has_recursive_flag(command) && !request_has_recursive_scope(input) {
+            if command_has_recursive_flag(command)
+                && !recursive_scope_allowed(input, command, context)
+                && !is_cleanup_request(input)
+            {
                 return Err(
                     "A command must not add recursive scope unless the user requested it."
                         .to_string(),
@@ -830,6 +1445,18 @@ fn validate_model_plan(
                         .to_string(),
                 );
             }
+        }
+        SemanticPlanKind::FilesystemAction => {
+            if !filesystem_operation_matches_request(plan.operation.as_ref(), input) {
+                return Err(
+                    "filesystem_action is only for an explicitly requested create, delete, rename, move, or copy change. Use change_directory for navigation, shell_command for observation, or answer for explanation."
+                        .to_string(),
+                );
+            }
+            return Err(
+                "A filesystem action must be resolved and synthesized by the host before validation."
+                    .to_string(),
+            );
         }
         SemanticPlanKind::Answer => {
             if plan
@@ -853,6 +1480,57 @@ fn validate_model_plan(
         }
     }
     Ok(())
+}
+
+fn is_cleanup_request(input: &str) -> bool {
+    input
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|word| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "clean" | "cleanup" | "clear" | "empty" | "purge"
+            )
+        })
+}
+
+fn command_deletes_environment_container(command: &str) -> bool {
+    split_planned_commands(command).iter().any(|step| {
+        let mut tokens = step.split_whitespace();
+        let program = tokens
+            .next()
+            .unwrap_or_default()
+            .trim_matches(['\'', '"'])
+            .to_ascii_lowercase();
+        if !matches!(program.as_str(), "remove-item" | "rm" | "rmdir" | "rd") {
+            return false;
+        }
+        tokens.any(is_bare_environment_reference)
+    })
+}
+
+fn is_bare_environment_reference(token: &str) -> bool {
+    let token = token.trim_matches(|character: char| {
+        matches!(character, '\'' | '"' | ',' | ';' | ')' | '}' | ']' | '.')
+    });
+    let name = token
+        .strip_prefix("$env:")
+        .or_else(|| {
+            token
+                .strip_prefix("${")
+                .and_then(|value| value.strip_suffix('}'))
+        })
+        .or_else(|| token.strip_prefix('$'))
+        .or_else(|| {
+            token
+                .strip_prefix('%')
+                .and_then(|value| value.strip_suffix('%'))
+        });
+    name.is_some_and(|name| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    })
 }
 
 fn explicitly_named_target(input: &str) -> Option<String> {
@@ -1439,6 +2117,8 @@ fn request_has_recursive_scope(input: &str) -> bool {
                 | "recursively"
                 | "subdirectory"
                 | "subdirectories"
+                | "subfolder"
+                | "subfolders"
                 | "tree"
                 | "project"
                 | "below"
@@ -1462,6 +2142,83 @@ fn request_has_recursive_scope(input: &str) -> bool {
             )
     });
     explicit_recursive_word || quantified_directory_scope || split_subdirectory
+}
+
+fn recursive_scope_allowed(input: &str, command: &str, context: &serde_json::Value) -> bool {
+    request_has_recursive_scope(input)
+        || (is_follow_up_refinement(input, context)
+            && previous_successful_command(context).is_some_and(|previous| {
+                previous
+                    .get("intent")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(request_has_recursive_scope)
+                    && previous
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|previous_command| {
+                            shell_command_family(previous_command)
+                                .zip(shell_command_family(command))
+                                .is_some_and(|(previous, current)| previous == current)
+                        })
+            }))
+}
+
+fn is_follow_up_refinement(input: &str, context: &serde_json::Value) -> bool {
+    if recent_session_turn(context).is_none() || previous_successful_command(context).is_none() {
+        return false;
+    }
+    let words = input
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    if words.is_empty() || words.len() > 12 {
+        return false;
+    }
+    matches!(
+        words[0].as_str(),
+        "i" | "it"
+            | "them"
+            | "that"
+            | "also"
+            | "instead"
+            | "now"
+            | "and"
+            | "but"
+            | "with"
+            | "without"
+            | "only"
+    ) || words
+        .iter()
+        .any(|word| matches!(word.as_str(), "it" | "them" | "those" | "these"))
+}
+
+fn previous_successful_command(context: &serde_json::Value) -> Option<&serde_json::Value> {
+    context
+        .get("session_commands")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|status| status.eq_ignore_ascii_case("success"))
+        })
+}
+
+fn shell_command_family(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    let command = trimmed
+        .strip_prefix("cmd.exe /d /s /c '")
+        .or_else(|| trimmed.strip_prefix("cmd /d /s /c '"))
+        .and_then(|inner| inner.strip_suffix('\''))
+        .unwrap_or(trimmed);
+    command
+        .split_whitespace()
+        .next()
+        .map(|head| head.trim_matches(['\'', '"']).to_ascii_lowercase())
+        .filter(|head| !head.is_empty())
 }
 
 fn semantic_to_provider_plan(
@@ -1542,6 +2299,14 @@ fn semantic_to_provider_plan(
                 diagnostics,
             )
         }
+        SemanticPlanKind::FilesystemAction => response_plan(
+            input,
+            surface,
+            "I could not safely resolve the requested filesystem operation.".to_string(),
+            model_output,
+            runtime,
+            diagnostics,
+        ),
     }
 }
 
@@ -1924,6 +2689,263 @@ mod planner_tests {
     }
 
     #[test]
+    fn validation_retry_changes_the_system_constraint_after_a_wrong_plan_kind() {
+        let valid_command = if cfg!(windows) {
+            "Get-ChildItem -Force"
+        } else {
+            "ls -la"
+        };
+        let valid_plan =
+            serde_json::json!({ "kind": "shell_command", "payload": valid_command }).to_string();
+        let outputs = RefCell::new(VecDeque::from([
+            result(
+                r#"{"kind":"filesystem_action","operation":"create_directory","target":"invented"}"#,
+            ),
+            result(&valid_plan),
+        ]));
+        let system_prompts = RefCell::new(Vec::new());
+        let input = "show hidden files here";
+        let plan = plan_ai_run_with(
+            input,
+            request(serde_json::json!({ "cwd": "." })),
+            profile(),
+            |request| {
+                system_prompts.borrow_mut().push(request.system_prompt);
+                outputs
+                    .borrow_mut()
+                    .pop_front()
+                    .ok_or_else(|| "fixture output exhausted".to_string())
+            },
+        );
+
+        assert!(
+            matches!(
+                plan.action,
+                ProviderPlanAction::ShellCommand | ProviderPlanAction::ApprovalRequired
+            ),
+            "{plan:?}"
+        );
+        let prompts = system_prompts.borrow();
+        assert_eq!(prompts.len(), 2);
+        assert!(!prompts[0].contains("Correction for this retry"));
+        assert!(prompts[1].contains("incorrectly used filesystem_action"));
+        assert!(prompts[1].contains("Return shell_command"));
+        assert!(prompts[1].contains("without inventing an absolute path"));
+        assert!(prompts[1].contains("Do not add recursive traversal"));
+    }
+
+    #[test]
+    fn observation_routing_uses_syntax_without_tool_or_path_special_cases() {
+        assert!(request_is_observation_intent("find files modified today"));
+        assert!(request_is_observation_intent("list Git branches"));
+        assert!(!request_is_observation_intent("go to Transit Bay"));
+        assert!(!request_is_observation_intent(
+            "create a directory named Transit Bay"
+        ));
+    }
+
+    #[test]
+    fn state_change_routing_rejects_a_substituted_observation() {
+        assert!(request_is_state_change_intent(
+            "install the project dependencies"
+        ));
+        assert!(request_is_state_change_intent("add this directory to PATH"));
+        assert!(!request_is_state_change_intent("show installed packages"));
+        assert!(!request_is_filesystem_change_intent(
+            "install the project dependencies"
+        ));
+        assert!(request_is_filesystem_change_intent(
+            "create a directory named Transit Bay"
+        ));
+        let install_prompt = constrain_plan_prompt(
+            "base".to_string(),
+            "install the project dependencies",
+            &serde_json::json!({}),
+        );
+        assert!(install_prompt.contains("non-filesystem state change"));
+        assert!(install_prompt.contains("kind shell_command"));
+        assert!(!install_prompt.contains("kind filesystem_action"));
+
+        let read_only = if cfg!(windows) {
+            r#"{"kind":"shell_command","payload":"Get-ChildItem node_modules"}"#
+        } else {
+            r#"{"kind":"shell_command","payload":"ls node_modules"}"#
+        };
+        let plan = plan_from_input(
+            "install the npm dependencies",
+            &[
+                read_only,
+                r#"{"kind":"shell_command","payload":"npm install"}"#,
+            ],
+            serde_json::json!({ "cwd": "." }),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert!(plan.needs_approval);
+        assert_eq!(plan.command.as_deref(), Some("npm install"));
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 1);
+    }
+
+    #[test]
+    fn count_observation_is_synthesized_for_the_host_shell() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-count-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let plan = plan_from_input(
+            "count files in this directory",
+            &[r#"{"kind":"shell_command","payload":"ls -l"}"#],
+            serde_json::json!({ "cwd": root.clone() }),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ShellCommand, "{plan:?}");
+        let command = plan.command.as_deref().unwrap();
+        if cfg!(windows) {
+            assert!(command.contains("Get-ChildItem"));
+            assert!(command.contains("-File"));
+            assert!(command.contains("Measure-Object"));
+            assert!(!command.contains("-Recurse"));
+        } else {
+            assert!(command.contains("find "));
+            assert!(command.contains("-maxdepth 1"));
+            assert!(command.contains("-type f"));
+            assert!(command.contains("wc -l"));
+        }
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_size_ranking_is_synthesized_from_host_grounded_constraints() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let cwd = std::env::temp_dir().join(format!("aish-directory-metrics-{unique}"));
+        fs::create_dir_all(&cwd).expect("cwd");
+        let input = "find the 10 largest folders and sub folders up to 3 levels in this folder";
+        let plan = plan_from_input(
+            input,
+            &[r#"{"kind":"filesystem_action","operation":"create_directory","target":"invented"}"#],
+            serde_json::json!({ "cwd": cwd }),
+        );
+
+        assert!(
+            matches!(
+                plan.action,
+                ProviderPlanAction::ShellCommand | ProviderPlanAction::ApprovalRequired
+            ),
+            "{plan:?}"
+        );
+        let command = plan.command.expect("host command");
+        assert!(command.contains('3'));
+        assert!(command.contains("10"));
+        assert!(command.to_ascii_lowercase().contains("gb"));
+        assert!(!command.contains("invented"));
+        if cfg!(windows) {
+            assert!(command.contains("Measure-Object"));
+            assert!(command.contains("-Depth 3"));
+            assert!(command.contains("-First 10"));
+        } else {
+            assert!(command.contains("du "));
+            assert!(command.contains("head -n 10"));
+        }
+        fs::remove_dir_all(cwd).expect("cleanup");
+    }
+
+    #[test]
+    fn observation_validation_rejects_commands_that_drop_requested_metrics() {
+        let input = "find the 10 largest folders and subfolders up to 3 levels";
+        assert!(validate_observation_constraints(
+            input,
+            "Get-ChildItem -Directory -Recurse | Sort-Object Length -Descending"
+        )
+        .unwrap_err()
+        .contains("maximum traversal depth"));
+
+        let missing_aggregation =
+            "Get-ChildItem -Directory -Recurse -Depth 3 | Sort-Object Length -Descending | Select-Object -First 10";
+        assert!(validate_observation_constraints(input, missing_aggregation)
+            .unwrap_err()
+            .contains("aggregate contained file sizes"));
+    }
+
+    #[test]
+    fn observation_validation_accepts_cross_platform_bounded_size_rankings() {
+        let input = "find the 10 largest folders and subfolders up to 3 levels";
+        let command = if cfg!(windows) {
+            "Get-ChildItem -Directory -Recurse -Depth 3 | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -File -Recurse | Measure-Object Length -Sum } | Select-Object -First 10"
+        } else {
+            "find . -maxdepth 3 -type d -exec du -sk {} + | sort -nr | head -n 10"
+        };
+        assert_eq!(validate_observation_constraints(input, command), Ok(()));
+    }
+
+    #[test]
+    fn current_directory_observation_replaces_only_an_invented_absolute_scope() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let cwd = std::env::temp_dir().join(format!("aish-observation-scope-{unique}"));
+        fs::create_dir_all(&cwd).expect("cwd");
+        let invented = if cfg!(windows) {
+            r"C:\definitely-missing-aish-scope-8427"
+        } else {
+            "/definitely-missing-aish-scope-8427"
+        };
+        let mut plan = SemanticPlan {
+            kind: SemanticPlanKind::ShellCommand,
+            payload: Some(format!("Get-ChildItem -Path '{invented}' -Directory")),
+            target: None,
+            scope: None,
+            message: None,
+            operation: None,
+            destination: None,
+        };
+
+        ground_current_directory_observation(
+            &mut plan,
+            "find the largest folders in this folder",
+            &serde_json::json!({ "cwd": cwd }),
+        );
+
+        let command = plan.payload.expect("command");
+        assert!(!command.contains(invented));
+        assert!(command.contains(&cwd.to_string_lossy().to_string()));
+        fs::remove_dir_all(cwd).expect("cleanup");
+    }
+
+    #[test]
+    fn explicit_external_scope_is_never_replaced_with_the_current_directory() {
+        let invented = if cfg!(windows) {
+            r"Z:\explicit-requested-scope"
+        } else {
+            "/explicit-requested-scope"
+        };
+        let mut plan = SemanticPlan {
+            kind: SemanticPlanKind::ShellCommand,
+            payload: Some(format!("Get-ChildItem -Path '{invented}' -Directory")),
+            target: None,
+            scope: None,
+            message: None,
+            operation: None,
+            destination: None,
+        };
+
+        ground_current_directory_observation(
+            &mut plan,
+            "find folders on the requested external drive",
+            &serde_json::json!({ "cwd": "." }),
+        );
+
+        assert!(plan.payload.expect("command").contains(invented));
+    }
+
+    #[test]
     fn session_turn_memory_is_bounded_included_in_context_and_clearable() {
         let mut session = ProviderSession::default();
         for index in 0..15 {
@@ -2138,7 +3160,7 @@ mod planner_tests {
             ],
             serde_json::json!({ "cwd": root }),
         );
-        assert_eq!(plan.action, ProviderPlanAction::ChangeDirectory);
+        assert_eq!(plan.action, ProviderPlanAction::ChangeDirectory, "{plan:?}");
         assert_eq!(
             plan.target.as_deref(),
             Some(
@@ -2148,7 +3170,12 @@ mod planner_tests {
                     .as_ref()
             )
         );
-        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 0);
+        assert_eq!(
+            plan.diagnostics.as_ref().unwrap().retry_count,
+            0,
+            "{:?}",
+            plan.diagnostics
+        );
         assert!(plan.diagnostics.as_ref().unwrap().parse_errors.is_empty());
         assert!(!plan
             .target
@@ -2388,6 +3415,95 @@ mod planner_tests {
         assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 1);
     }
 
+    #[test]
+    fn mismatched_filesystem_action_is_repaired_before_grounding() {
+        let plan = plan_from_input(
+            "show hidden files here",
+            &[
+                r#"{"kind":"filesystem_action","operation":"create_directory","target":"hidden","scope":"current"}"#,
+                r#"{"kind":"shell_command","payload":"Get-ChildItem -Force"}"#,
+            ],
+            serde_json::json!({}),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ShellCommand);
+        assert_eq!(plan.command.as_deref(), Some("Get-ChildItem -Force"));
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 1);
+        assert!(plan
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("only for an explicitly requested")));
+    }
+
+    #[test]
+    fn related_short_follow_up_inherits_previous_recursive_scope() {
+        let context = serde_json::json!({
+            "session_commands": [{
+                "intent": "find the largest folders and subfolders up to 3 levels",
+                "command": "Get-ChildItem -Recurse -Directory",
+                "status": "success",
+                "reason": "fixture"
+            }],
+            "session_turns": [{
+                "request": "find the largest folders and subfolders up to 3 levels",
+                "outcome": "shell action completed successfully"
+            }]
+        });
+        let constrained =
+            constrain_plan_prompt("fixture".to_string(), "i need sizes in gb", &context);
+        assert!(constrained.contains("follow-up refinement"));
+        assert!(constrained.contains("most recent successful session command"));
+        let plan = plan_from_input(
+            "i need sizes in gb",
+            &[
+                r#"{"kind":"shell_command","payload":"Get-ChildItem -Recurse -Directory | ForEach-Object { [PSCustomObject]@{ FullName = $_.FullName; SizeGB = [math]::Round(((Get-ChildItem -LiteralPath $_.FullName -File -Recurse | Measure-Object Length -Sum).Sum / 1GB), 2) } }"}"#,
+            ],
+            context,
+        );
+
+        assert!(
+            matches!(
+                plan.action,
+                ProviderPlanAction::ShellCommand | ProviderPlanAction::ApprovalRequired
+            ),
+            "{plan:?}"
+        );
+        assert!(plan
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains("-Recurse")));
+    }
+
+    #[test]
+    fn unrelated_request_does_not_inherit_previous_recursive_scope() {
+        let context = serde_json::json!({
+            "session_commands": [{
+                "intent": "find files recursively below here",
+                "command": "Get-ChildItem -Recurse -File",
+                "status": "success",
+                "reason": "fixture"
+            }],
+            "session_turns": [{
+                "request": "find files recursively below here",
+                "outcome": "shell action completed successfully"
+            }]
+        });
+        let plan = plan_from_input(
+            "show hidden files here",
+            &[
+                r#"{"kind":"shell_command","payload":"Get-ChildItem -Recurse -Force"}"#,
+                r#"{"kind":"shell_command","payload":"Get-ChildItem -Force"}"#,
+            ],
+            context,
+        );
+
+        assert_eq!(plan.action, ProviderPlanAction::ShellCommand);
+        assert_eq!(plan.command.as_deref(), Some("Get-ChildItem -Force"));
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 1);
+    }
+
     #[cfg(windows)]
     #[test]
     fn cmd_only_empty_file_creation_is_repaired_before_approval() {
@@ -2580,6 +3696,61 @@ mod planner_tests {
             ),
             "Where-Object { $_.Name -eq $PSVersionTable }"
         );
+        assert_eq!(
+            normalize_powershell_environment_references("Get-ChildItem %PATH%", "show the PATH"),
+            "Get-ChildItem $env:PATH"
+        );
+        assert_eq!(
+            normalize_powershell_environment_references(
+                "Write-Output '%PATH%'",
+                "show a literal example"
+            ),
+            "Write-Output '%PATH%'"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn cleanup_preserves_environment_container_and_stays_approval_gated() {
+        let plan = plan_from_input(
+            "clear the contents of the temporary directory",
+            &[
+                r#"{"kind":"shell_command","payload":"Remove-Item %TEMP% -Recurse -Force"}"#,
+                r#"{"kind":"shell_command","payload":"Get-ChildItem -LiteralPath $env:TEMP -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"}"#,
+            ],
+            serde_json::json!({}),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert_eq!(plan.risk, RiskLevel::High);
+        assert!(plan.command.as_deref().is_some_and(|command| {
+            command.starts_with("Get-ChildItem") && command.contains("$env:TEMP")
+        }));
+        assert!(plan
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .parse_errors
+            .iter()
+            .any(|error| error.contains("preserving the environment-owned container")));
+    }
+
+    #[test]
+    fn cleanup_prompt_is_contextual_instead_of_globally_constraining_plans() {
+        let cleanup = constrain_plan_prompt(
+            "base".to_string(),
+            "clean the requested cache locations",
+            &serde_json::json!({}),
+        );
+        assert!(cleanup.contains("Preserve every explicitly requested cleanup location"));
+        assert!(cleanup.contains("bounded ordered commands"));
+
+        let ordinary = constrain_plan_prompt(
+            "base".to_string(),
+            "show the current directory",
+            &serde_json::json!({}),
+        );
+        assert!(ordinary.contains("Host request class: observation"));
+        assert!(!ordinary.contains("cleanup location"));
     }
 
     #[test]
@@ -2641,6 +3812,63 @@ mod planner_tests {
     }
 
     #[test]
+    fn parent_navigation_is_grounded_without_model_path_completion() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-parent-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cwd = root.join("child");
+        fs::create_dir_all(&cwd).unwrap();
+        let plan = plan_from_input(
+            "move one directory up",
+            &[],
+            serde_json::json!({ "cwd": cwd }),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ChangeDirectory, "{plan:?}");
+        assert_eq!(
+            plan.target.as_deref(),
+            Some(fs::canonicalize(&root).unwrap().to_string_lossy().as_ref())
+        );
+        assert!(plan.diagnostics.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compound_find_and_enter_request_is_navigation() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-compound-navigation-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = root.join("nested").join("Build Bay 8f31");
+        fs::create_dir_all(&target).unwrap();
+        let plan = plan_from_input(
+            "find the closest directory named Build Bay 8f31 and enter it",
+            &[r#"{"kind":"shell_command","payload":"Get-ChildItem -Directory"}"#],
+            serde_json::json!({ "cwd": root.clone() }),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ChangeDirectory);
+        assert_eq!(
+            plan.target.as_deref(),
+            Some(
+                fs::canonicalize(&target)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn repairs_an_ungrounded_model_target_from_existing_request_names() {
         let root = std::env::temp_dir().join(format!(
             "aish-provider-grounding-{}-{}",
@@ -2674,6 +3902,79 @@ mod planner_tests {
         );
         assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 0);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reclassifies_a_wrong_filesystem_action_as_grounded_navigation() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-navigation-kind-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = root.join("Transit Bay 8f31");
+        fs::create_dir_all(&target).unwrap();
+        let plan = plan_from_input(
+            "navigate to Transit Bay 8f31",
+            &[r#"{"kind":"filesystem_action","operation":"create_directory","target":"invented"}"#],
+            serde_json::json!({ "cwd": root.clone() }),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ChangeDirectory);
+        assert_eq!(
+            plan.target.as_deref(),
+            Some(
+                fs::canonicalize(&target)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn navigation_validation_retry_requires_change_directory() {
+        let rejected = SemanticPlan {
+            kind: SemanticPlanKind::FilesystemAction,
+            payload: None,
+            operation: Some(aish_ai::FilesystemOperation::CreateDirectory),
+            target: Some("invented".to_string()),
+            destination: None,
+            scope: None,
+            message: None,
+        };
+        let constraint = validation_repair_system_constraint(
+            &rejected,
+            "enter the nearest folder called build",
+            "",
+        );
+        assert!(constraint.contains("Return change_directory"));
+        assert!(!constraint.contains("Return shell_command"));
+    }
+
+    #[test]
+    fn state_change_validation_retry_requires_an_effectful_shell_command() {
+        let rejected = SemanticPlan {
+            kind: SemanticPlanKind::FilesystemAction,
+            payload: None,
+            operation: Some(aish_ai::FilesystemOperation::CreateDirectory),
+            target: Some("invented".to_string()),
+            destination: None,
+            scope: None,
+            message: None,
+        };
+        let constraint = validation_repair_system_constraint(
+            &rejected,
+            "install a package with the package manager",
+            "",
+        );
+        assert!(constraint.contains("non-filesystem state change"));
+        assert!(constraint.contains(r#""kind":"shell_command""#));
+        assert!(constraint.contains("directly perform the requested change"));
+        assert!(!constraint.contains("requested observation"));
     }
 
     #[test]
@@ -2744,6 +4045,37 @@ mod planner_tests {
                     .as_ref()
             )
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn open_existing_directory_uses_filesystem_evidence_for_navigation() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-open-grounding-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = root.join("Review Space 8f31");
+        fs::create_dir_all(&target).unwrap();
+        let plan = plan_from_input(
+            "open Review Space 8f31 from here",
+            &[r#"{"kind":"shell_command","payload":"Get-ChildItem -Force"}"#],
+            serde_json::json!({ "cwd": root.clone() }),
+        );
+        assert_eq!(plan.action, ProviderPlanAction::ChangeDirectory, "{plan:?}");
+        assert_eq!(
+            plan.target.as_deref(),
+            Some(
+                fs::canonicalize(&target)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(plan.diagnostics.as_ref().unwrap().retry_count, 0);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2864,6 +4196,111 @@ mod planner_tests {
             user_visible_path(Path::new(r"\\?\UNC\server\share\fixture")),
             r"\\server\share\fixture"
         );
+    }
+
+    #[test]
+    fn destructive_plan_is_grounded_to_one_existing_known_folder_entry() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-grounded-delete-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let downloads = root.join("Redirected Downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(downloads.join("local-companion.zip"), "fixture").unwrap();
+        let plan = plan_from_input(
+            "remove local companion zip in downloads",
+            &[r#"{"kind":"shell_command","payload":"Remove-Item local_companion.zip -Force"}"#],
+            serde_json::json!({
+                "cwd": root,
+                "known_folders": { "downloads": downloads }
+            }),
+        );
+
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert_eq!(plan.risk, RiskLevel::High);
+        assert!(plan.needs_approval);
+        assert!(plan
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains("local-companion.zip")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn known_folder_creation_uses_the_verified_redirected_parent() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-grounded-create-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let desktop = root.join("Cloud Desktop");
+        fs::create_dir_all(&desktop).unwrap();
+        let plan = plan_from_input(
+            "make a folder named barcelona on desktop",
+            &[
+                r#"{"kind":"shell_command","payload":"New-Item -ItemType Directory -Path $env:USERPROFILE\\Desktop\\barcelona"}"#,
+            ],
+            serde_json::json!({
+                "cwd": root,
+                "known_folders": { "desktop": desktop }
+            }),
+        );
+
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert_eq!(plan.risk, RiskLevel::Medium);
+        assert!(plan
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains(&desktop.to_string_lossy().to_string())));
+        assert!(!plan
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains("USERPROFILE")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn typed_filesystem_rename_is_resolved_before_risk_classification() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-provider-typed-rename-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let downloads = root.join("Redirected Downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(downloads.join("old-file.txt"), "fixture").unwrap();
+        let plan = plan_from_input(
+            "rename old file.txt to New File.txt in downloads",
+            &[
+                r#"{"kind":"filesystem_action","operation":"rename","target":"old file.txt","destination":"New File.txt","scope":"downloads"}"#,
+            ],
+            serde_json::json!({
+                "cwd": root,
+                "known_folders": { "downloads": downloads }
+            }),
+        );
+
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert!(plan.needs_approval);
+        assert!(plan
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains("old-file.txt")));
+        assert!(plan
+            .command
+            .as_deref()
+            .is_some_and(|command| command.contains("New File.txt")));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3143,10 +4580,16 @@ mod planner_tests {
 
     #[test]
     fn current_directory_reference_is_grounded_by_host_context() {
+        let command = if cfg!(windows) {
+            r#"{"kind":"shell_command","payload":"setx PATH \"%PATH%;%CD%\""}"#
+        } else {
+            r#"{"kind":"shell_command","payload":"export PATH=\"$PATH:$PWD\""}"#
+        };
+        let cwd = std::env::current_dir().unwrap();
         let plan = plan_from_input(
             "add this directory to PATH",
-            &[r#"{"kind":"shell_command","payload":"setx PATH \"%PATH%;%CD%\""}"#],
-            serde_json::json!({ "cwd": "C:\\workspace\\arbitrary" }),
+            &[command],
+            serde_json::json!({ "cwd": cwd }),
         );
         assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
         assert!(plan.needs_approval);

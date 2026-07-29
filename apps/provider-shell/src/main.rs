@@ -1,7 +1,9 @@
+mod known_folders;
 mod logging;
 mod model_registry;
 mod runtime_bootstrap;
 mod setup;
+mod theme;
 mod updater;
 
 mod legacy_main {

@@ -27,6 +27,9 @@ if (-not $ValidateOnly) {
     New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $fixtureRoot $simple) $nearest) | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $fixtureRoot "left") $ambiguous) | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $fixtureRoot "right") $ambiguous) | Out-Null
+    Set-Content -LiteralPath (Join-Path $fixtureRoot "package.json") -Value '{"private":true}' -NoNewline
+    Set-Content -LiteralPath (Join-Path $fixtureRoot "Cargo.toml") -Value '[workspace]' -NoNewline
+    Set-Content -LiteralPath (Join-Path $fixtureRoot "note-$suffix.txt") -Value 'fixture' -NoNewline
     Set-Content -LiteralPath (Join-Path (Join-Path $fixtureRoot $simple) "package.json") -Value '{"private":true}' -NoNewline
 }
 
@@ -38,7 +41,8 @@ function Add-Case {
         [string[]]$ExpectedActions,
         [string]$Mode = "plan",
         [Nullable[int]]$ExitCode = $null,
-        [string]$Stderr = ""
+        [string]$Stderr = "",
+        [string[]]$RequiredCommandPatterns = @()
     )
     $cases.Add([pscustomobject]@{
         category = $Category
@@ -47,6 +51,7 @@ function Add-Case {
         mode = $Mode
         exit_code = $ExitCode
         stderr = $Stderr
+        required_command_patterns = $RequiredCommandPatterns
     })
 }
 
@@ -94,7 +99,12 @@ Add-Case navigation "open the directory named $simple relative to here" @("chang
 Add-Case read_only "show hidden files here" @("shell_command", "fallback")
 Add-Case read_only "find large files in this project" @("shell_command")
 Add-Case read_only "show the current directory" @("shell_command", "fallback")
-Add-Case read_only "list files sorted by size" @("shell_command", "fallback")
+$directoryMetricPatterns = if ($env:OS -eq "Windows_NT") {
+    @("-Depth 3", "-First 10", "Measure-Object", "SizeGB")
+} else {
+    @("du ", "head -n 10", "GB")
+}
+Add-Case read_only "find the 10 largest folders and sub folders up to 3 levels in this folder" @("shell_command", "approval_required") -RequiredCommandPatterns $directoryMetricPatterns
 Add-Case read_only "find every package.json below here" @("shell_command")
 Add-Case read_only "show git status" @("shell_command")
 Add-Case read_only "show the last five git commits" @("shell_command")
@@ -128,7 +138,7 @@ Add-Case mutation "write hello into result-$suffix.txt" @("approval_required")
 Add-Case mutation "append one line to result-$suffix.txt" @("approval_required", "fallback")
 Add-Case mutation "install the npm dependencies" @("approval_required")
 Add-Case mutation "install ripgrep with winget" @("approval_required")
-Add-Case mutation "set an environment variable named AISH_FIXTURE" @("approval_required")
+Add-Case mutation "set an environment variable named AISH_FIXTURE" @("approval_required", "fallback")
 Add-Case mutation "add this directory to PATH" @("approval_required", "fallback")
 Add-Case mutation "change script execution policy" @("approval_required", "fallback")
 Add-Case mutation "stop the process using port 3000" @("approval_required", "fallback")
@@ -242,6 +252,17 @@ try {
             $action = if ($null -ne $plan) { [string]$plan.action } else { "process_failure" }
             $expected = $case.expected_actions -contains $action
             $diagnostics = if ($null -ne $plan) { $plan.diagnostics } else { $null }
+            $missingCommandPatterns = @()
+            if ($expected -and $case.required_command_patterns.Count -gt 0) {
+                $command = if ($null -ne $plan) { [string]$plan.command } else { "" }
+                $missingCommandPatterns = @($case.required_command_patterns | Where-Object {
+                    -not $command.Contains([string]$_)
+                })
+                if ($missingCommandPatterns.Count -gt 0) {
+                    $expected = $false
+                    $failure = "Command omitted required semantics: $($missingCommandPatterns -join ', ')."
+                }
+            }
             if (-not $expected -and [string]::IsNullOrWhiteSpace($failure)) {
                 $failure = "Expected action $($case.expected_actions -join ' or '), received $action."
             }

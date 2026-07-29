@@ -57,6 +57,7 @@ impl ModelRegistry {
                 models.push(profile_for(&canonical, runtime_path));
             }
         }
+        deduplicate_profiles_by_id(&mut models);
         models.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
 
         let selection_path = install_root().join("state").join("model-selection.json");
@@ -117,6 +118,11 @@ impl ModelRegistry {
             )),
         }
     }
+}
+
+fn deduplicate_profiles_by_id(models: &mut Vec<ModelProfile>) {
+    let mut seen = HashSet::new();
+    models.retain(|model| seen.insert(model.id.to_ascii_lowercase()));
 }
 
 fn select_active_id(
@@ -278,7 +284,8 @@ fn normalize_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        persist_selection, profile_for, read_selection, select_active_id, stable_id, ModelProfile,
+        deduplicate_profiles_by_id, persist_selection, profile_for, read_selection,
+        select_active_id, stable_id, ModelProfile,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -311,6 +318,18 @@ mod tests {
         assert_eq!(qwen25.structured_output_strategy, "grammar");
         assert!(qwen25.stop_sequences.contains(&"<|im_start|>".to_string()));
         assert_eq!(future.structured_output_strategy, "auto");
+    }
+
+    #[test]
+    fn duplicate_model_ids_from_multiple_roots_keep_the_first_profile() {
+        let first = fixture_profile("planner-q6-k", "C:/selected/planner-q6.gguf");
+        let duplicate = fixture_profile("planner-q6-k", "C:/installed/planner-q6.gguf");
+        let mut models = vec![first.clone(), duplicate];
+
+        deduplicate_profiles_by_id(&mut models);
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model_path, first.model_path);
     }
 
     #[test]

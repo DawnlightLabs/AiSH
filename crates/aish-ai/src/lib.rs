@@ -15,7 +15,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 mod semantic_plan;
 mod structured_output;
 pub use semantic_plan::{
-    parse_semantic_plan, PlanParseFailure, PlanParseSuccess, SemanticPlan, SemanticPlanKind,
+    parse_semantic_plan, FilesystemOperation, PlanParseFailure, PlanParseSuccess, SemanticPlan,
+    SemanticPlanKind,
 };
 use structured_output::{
     inspect_llama_cli_capabilities, StructuredOutputMode, SEMANTIC_PLAN_GBNF,
@@ -168,6 +169,21 @@ pub fn validate_shell_command_dialect(command: &str) -> Result<(), String> {
 }
 
 fn validate_shell_command_dialect_for(command: &str, family: &str) -> Result<(), String> {
+    if family == "powershell" && contains_percent_environment_reference(command) {
+        return Err(
+            "PowerShell plans must use $env:NAME rather than CMD-style %NAME% environment references."
+                .to_string(),
+        );
+    }
+    if matches!(family, "posix" | "fish")
+        && (contains_percent_environment_reference(command)
+            || command.to_ascii_lowercase().contains("$env:"))
+    {
+        return Err(
+            "Unix shell plans must use $NAME or ${NAME} environment references rather than Windows syntax."
+                .to_string(),
+        );
+    }
     if family == "powershell"
         && !is_managed_cmd_command(command)
         && command
@@ -201,6 +217,29 @@ fn validate_shell_command_dialect_for(command: &str, family: &str) -> Result<(),
         );
     }
     Ok(())
+}
+
+fn contains_percent_environment_reference(command: &str) -> bool {
+    let characters = command.chars().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < characters.len() {
+        if characters[index] != '%' {
+            index += 1;
+            continue;
+        }
+        let start = index + 1;
+        let mut end = start;
+        while end < characters.len()
+            && (characters[end].is_ascii_alphanumeric() || characters[end] == '_')
+        {
+            end += 1;
+        }
+        if end > start && characters.get(end) == Some(&'%') {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 fn is_managed_cmd_command(command: &str) -> bool {
@@ -278,7 +317,7 @@ fn contains_powershell_wildcard_variable(command: &str) -> bool {
 }
 
 pub fn build_semantic_plan_system_prompt() -> String {
-    "You are AiSH's intent planner. Return exactly one compact JSON semantic plan. Allowed kinds: change_directory uses target and optional scope; shell_command uses payload; answer uses message; clarification uses message only when required information is missing. A shell_command payload may contain two to four ordered commands separated by semicolons only when the objective genuinely requires multiple steps; the host executes them separately and stops on failure. Use recent session turns to resolve concise follow-ups when the referenced target or choice is unambiguous. For navigation, return the user's target rather than cd or Set-Location. Explanatory questions asking why, how, what, or for an explanation must return an answer and must not run a command merely to explain a general cause or concept. Only explicit requests to display, list, find, check, or inspect current machine, filesystem, process, environment, repository, or project state should return a shell_command that observes that state; never invent observed state as an answer. Do not add risk, shell, status, reasoning, Markdown, placeholders, or extra text. Never invent paths, files, tools, or facts. The host resolves paths, validates commands, classifies risk, and handles approval.".to_string()
+    "You are AiSH's intent planner. Return exactly one compact JSON semantic plan. Allowed kinds: change_directory uses target and optional scope; filesystem_action uses operation, the user's target reference, optional destination, and optional scope; shell_command uses payload for non-filesystem shell work; answer uses message; clarification uses message only when required information is missing. Filesystem operations are create_file, create_directory, delete, rename, move, and copy. Preserve user-provided names exactly and never convert spaces, hyphens, underscores, case, or Unicode. Do not invent or complete filesystem paths; the host resolves existing targets and known folders. A shell_command payload may contain two to four ordered commands separated by semicolons only when the objective genuinely requires multiple steps; the host executes them separately and stops on failure. Use recent session turns to resolve concise follow-ups when the referenced target or choice is unambiguous. For navigation, return the user's target rather than cd or Set-Location. Explanatory questions asking why, how, what, or for an explanation must return an answer and must not run a command merely to explain a general cause or concept. Only explicit requests to display, list, find, check, or inspect current machine, filesystem, process, environment, repository, or project state should return a shell_command that observes that state; never invent observed state as an answer. Do not add risk, shell, status, reasoning, Markdown, placeholders, or extra text. Never invent paths, files, tools, or facts. The host resolves paths, validates commands, classifies risk, and handles approval.".to_string()
 }
 
 pub fn build_semantic_plan_prompt(intent: &str, context_json: &serde_json::Value) -> String {
@@ -297,10 +336,10 @@ fn build_semantic_plan_prompt_for(
     let context = serde_json::to_string_pretty(context_json).unwrap_or_else(|_| "{}".to_string());
     let dialect = match family {
         "powershell" => {
-            "Use native Windows PowerShell Verb-Noun cmdlets and parameters. Do not use Unix-style flags on PowerShell aliases. Do not use CMD built-ins or slash-style CMD switches."
+            "Use native Windows PowerShell Verb-Noun cmdlets and parameters, with $env:NAME for environment variables. Do not use CMD built-ins, %NAME% variables, or slash-style CMD switches."
         }
-        "fish" => "Use fish shell syntax.",
-        _ => "Use POSIX syntax suitable for bash or zsh.",
+        "fish" => "Use fish shell syntax and $NAME environment variables, never Windows %NAME% or $env:NAME syntax.",
+        _ => "Use POSIX syntax suitable for bash or zsh, with $NAME or ${NAME} environment variables and never Windows variable syntax.",
     };
 
     format!(
@@ -819,6 +858,16 @@ Return JSON."#;
         assert!(validate_shell_command_dialect_for("test -f package.json", "posix").is_ok());
         assert!(validate_shell_command_dialect_for("test -f package.json", "powershell").is_err());
         assert!(validate_shell_command_dialect_for("Get-ChildItem -Force", "powershell").is_ok());
+        assert!(
+            validate_shell_command_dialect_for("Remove-Item %TEMP% -Force", "powershell").is_err()
+        );
+        assert!(
+            validate_shell_command_dialect_for("Remove-Item $env:TEMP -Force", "powershell")
+                .is_ok()
+        );
+        assert!(validate_shell_command_dialect_for("rm -rf %TMPDIR%", "posix").is_err());
+        assert!(validate_shell_command_dialect_for("rm -rf $env:TEMP", "posix").is_err());
+        assert!(validate_shell_command_dialect_for("rm -rf \"$TMPDIR\"/*", "posix").is_ok());
         assert!(validate_shell_command_dialect_for("type nul > sample.txt", "powershell").is_err());
         assert!(validate_shell_command_dialect_for("copy nul sample.txt", "powershell").is_err());
         assert!(validate_shell_command_dialect_for("echo. > sample.txt", "powershell").is_err());
