@@ -170,6 +170,38 @@ fn profile_for(path: &Path, runtime_path: &str) -> ModelProfile {
                 "grammar",
                 vec!["<|im_start|>".to_string(), "<|im_end|>".to_string()],
             )
+        } else if lower.contains("qwen3") {
+            (
+                "qwen3",
+                8192,
+                256,
+                "grammar",
+                vec!["<|im_start|>".to_string(), "<|im_end|>".to_string()],
+            )
+        } else if lower.contains("minicpm5") {
+            (
+                "minicpm5",
+                8192,
+                256,
+                "grammar",
+                vec!["<|im_start|>".to_string(), "<|im_end|>".to_string()],
+            )
+        } else if lower.contains("internlm2_5") || lower.contains("internlm2-5") {
+            (
+                "internlm2.5",
+                8192,
+                256,
+                "grammar",
+                vec!["<|im_start|>".to_string(), "<|im_end|>".to_string()],
+            )
+        } else if lower.contains("lfm2.5") || lower.contains("lfm2-5") {
+            (
+                "lfm2.5",
+                8192,
+                320,
+                "grammar",
+                vec!["<|im_start|>".to_string(), "<|im_end|>".to_string()],
+            )
         } else {
             ("generic-gguf", 4096, 192, "auto", Vec::new())
         };
@@ -306,6 +338,19 @@ mod tests {
             PathBuf::from("qwen3.5-2b-instruct-q8_0.gguf").as_path(),
             "llama-cli",
         );
+        let qwen3 = profile_for(PathBuf::from("Qwen3-1.7B-Q8_0.gguf").as_path(), "llama-cli");
+        let minicpm5 = profile_for(
+            PathBuf::from("MiniCPM5-1B-Q8_0.gguf").as_path(),
+            "llama-cli",
+        );
+        let internlm = profile_for(
+            PathBuf::from("internlm2_5-1_8b-chat-q6_k.gguf").as_path(),
+            "llama-cli",
+        );
+        let lfm = profile_for(
+            PathBuf::from("LFM2.5-1.2B-Instruct-Q6_K.gguf").as_path(),
+            "llama-cli",
+        );
         let future = profile_for(
             PathBuf::from("future-general-model-q7.gguf").as_path(),
             "llama-cli",
@@ -313,9 +358,19 @@ mod tests {
 
         assert_eq!(qwen25.family, "qwen2.5-coder");
         assert_eq!(qwen35.family, "qwen3.5");
+        assert_eq!(qwen3.family, "qwen3");
+        assert_eq!(minicpm5.family, "minicpm5");
+        assert_eq!(internlm.family, "internlm2.5");
+        assert_eq!(lfm.family, "lfm2.5");
+        assert_eq!(lfm.max_tokens, 320);
+        assert!(!qwen25.use_system_prompt);
         assert_eq!(future.family, "generic-gguf");
         assert_ne!(qwen25.max_tokens, qwen35.max_tokens);
         assert_eq!(qwen25.structured_output_strategy, "grammar");
+        for profile in [&qwen3, &minicpm5, &internlm, &lfm] {
+            assert_eq!(profile.structured_output_strategy, "grammar");
+            assert_eq!(profile.context_tokens, 8192);
+        }
         assert!(qwen25.stop_sequences.contains(&"<|im_start|>".to_string()));
         assert_eq!(future.structured_output_strategy, "auto");
     }

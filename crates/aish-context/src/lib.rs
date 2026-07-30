@@ -8,6 +8,7 @@ pub struct ProjectContext {
     pub package_manager: Option<String>,
     pub detected_files: Vec<String>,
     pub available_tools: Vec<String>,
+    pub available_tasks: Vec<String>,
 }
 
 pub fn inspect_current_project() -> ProjectContext {
@@ -79,6 +80,22 @@ pub fn inspect_project(cwd: impl AsRef<Path>) -> ProjectContext {
     } else {
         None
     };
+    let mut available_tasks = if detected_files.iter().any(|file| file == "package.json") {
+        std::fs::read_to_string(cwd.join("package.json"))
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .and_then(|package| {
+                package
+                    .get("scripts")
+                    .and_then(|scripts| scripts.as_object())
+                    .cloned()
+            })
+            .map(|scripts| scripts.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    available_tasks.sort_by_key(|task| task.to_ascii_lowercase());
 
     ProjectContext {
         cwd: cwd.display().to_string(),
@@ -86,5 +103,33 @@ pub fn inspect_project(cwd: impl AsRef<Path>) -> ProjectContext {
         package_manager,
         detected_files,
         available_tools: Vec::new(),
+        available_tasks,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn discovers_declared_node_tasks_without_inventing_any() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("aish-context-tasks-{unique}"));
+        std::fs::create_dir_all(&root).expect("fixture directory");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"scripts":{"test":"vitest","dev":"vite"}}"#,
+        )
+        .expect("fixture package");
+
+        let context = inspect_project(&root);
+        assert_eq!(context.project_type.as_deref(), Some("node"));
+        assert_eq!(context.package_manager.as_deref(), Some("npm"));
+        assert_eq!(context.available_tasks, ["dev", "test"]);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

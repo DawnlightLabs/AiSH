@@ -20,6 +20,8 @@ pub enum FilesystemOperation {
     Rename,
     Move,
     Copy,
+    WriteFile,
+    AppendFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,7 +125,10 @@ fn normalize_plan(value: Value) -> Result<SemanticPlan, String> {
     let raw_kind = string_field(object, &["kind", "action_type", "action", "type"])
         .ok_or_else(|| "plan is missing kind".to_string())?;
     let kind = normalize_kind(raw_kind)?;
-    let payload = cleaned_field(object, &["payload", "command", "shell_command"]);
+    let payload = cleaned_field(
+        object,
+        &["payload", "command", "shell_command", "content", "text"],
+    );
     let destination = cleaned_field(object, &["destination", "new_name", "new_path", "to"]);
     let mut target = cleaned_field(object, &["target", "path", "directory", "source"]);
     if kind == SemanticPlanKind::ChangeDirectory && target.is_none() {
@@ -181,6 +186,14 @@ fn validate_plan(plan: SemanticPlan) -> Result<SemanticPlan, String> {
         {
             Err("filesystem_action operation requires destination".to_string())
         }
+        SemanticPlanKind::FilesystemAction
+            if matches!(
+                plan.operation,
+                Some(FilesystemOperation::WriteFile | FilesystemOperation::AppendFile)
+            ) && !present(&plan.payload) =>
+        {
+            Err("filesystem_action write operation requires content".to_string())
+        }
         SemanticPlanKind::Answer | SemanticPlanKind::Clarification if !present(&plan.message) => {
             Err("response plan is missing message".to_string())
         }
@@ -217,6 +230,10 @@ fn normalize_filesystem_operation(value: &str) -> Result<FilesystemOperation, St
         "rename" => Ok(FilesystemOperation::Rename),
         "move" => Ok(FilesystemOperation::Move),
         "copy" => Ok(FilesystemOperation::Copy),
+        "write_file" | "write" | "set_content" | "overwrite_file" => {
+            Ok(FilesystemOperation::WriteFile)
+        }
+        "append_file" | "append" | "add_content" => Ok(FilesystemOperation::AppendFile),
         _ => Err(format!("unsupported filesystem operation: {value}")),
     }
 }
@@ -392,8 +409,20 @@ mod tests {
         assert_eq!(rename.plan.operation, Some(FilesystemOperation::Rename));
         assert_eq!(rename.plan.destination.as_deref(), Some("New Name.txt"));
 
+        let write = parse_semantic_plan(
+            r#"{"kind":"filesystem_action","operation":"write_file","target":"Result File.txt","content":"hello world"}"#,
+        )
+        .unwrap();
+        assert_eq!(write.plan.operation, Some(FilesystemOperation::WriteFile));
+        assert_eq!(write.plan.target.as_deref(), Some("Result File.txt"));
+        assert_eq!(write.plan.payload.as_deref(), Some("hello world"));
+
         assert!(parse_semantic_plan(
             r#"{"kind":"filesystem_action","operation":"move","target":"artifact.zip"}"#
+        )
+        .is_err());
+        assert!(parse_semantic_plan(
+            r#"{"kind":"filesystem_action","operation":"append_file","target":"notes.txt"}"#
         )
         .is_err());
     }

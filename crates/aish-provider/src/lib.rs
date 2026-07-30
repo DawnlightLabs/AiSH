@@ -1,7 +1,8 @@
 use aish_ai::{
     build_repair_prompt, build_semantic_plan_prompt, build_semantic_plan_system_prompt,
-    parse_semantic_plan, run_gguf_model, validate_shell_command_dialect, ModelProfile,
-    ModelRunRequest, ModelRunResult, SemanticPlan, SemanticPlanKind,
+    failed_command_recovery_grammar, parse_semantic_plan, run_gguf_model,
+    semantic_plan_grammar_for, validate_shell_command_dialect, ModelProfile, ModelRunRequest,
+    ModelRunResult, SemanticPlan, SemanticPlanKind,
 };
 use aish_core::{AiSubmode, AppMode, CachePolicy, ContextLevel, RiskLevel};
 use aish_safety::classify_risk;
@@ -413,6 +414,11 @@ fn plan_ai_run_with(
         input,
         &request.context_json,
     );
+    let grammar_override = if request.context_json.get("failed_command").is_some() {
+        Some(failed_command_recovery_grammar())
+    } else {
+        constrained_plan_kind(input, &request.context_json).map(semantic_plan_grammar_for)
+    };
     let maximum_retries = profile.retry_count.min(1);
     let mut parse_errors = Vec::new();
     let mut last_result = None;
@@ -423,6 +429,7 @@ fn plan_ai_run_with(
             profile: profile.clone(),
             system_prompt: system_prompt.clone(),
             prompt: prompt.clone(),
+            grammar_override: grammar_override.clone(),
         }) {
             Ok(result) => result,
             Err(error) => return planner_runtime_error(input, request.surface, error),
@@ -474,13 +481,25 @@ fn plan_ai_run_with(
         match parse_semantic_plan(&result.output) {
             Ok(parsed) => {
                 let mut plan = parsed.plan;
+                let effective_input = contextualized_request(input, &request.context_json);
                 ground_navigation_plan(&mut plan, input, &request.context_json);
                 ground_filesystem_mutation(&mut plan, input, &request.context_json);
+                ground_local_script_execution(&mut plan, input, &request.context_json);
+                ground_bounded_print_task(&mut plan, input);
                 normalize_shell_plan_for_host(&mut plan, input);
-                ground_current_directory_observation(&mut plan, input, &request.context_json);
+                ground_current_directory_observation(
+                    &mut plan,
+                    &effective_input,
+                    &request.context_json,
+                );
                 ground_directory_size_observation(&mut plan, input, &request.context_json);
-                ground_count_observation(&mut plan, input, &request.context_json);
-                if let Err(error) = validate_model_plan(&plan, input, &request.context_json) {
+                ground_count_observation(&mut plan, &effective_input, &request.context_json);
+                ground_current_project_run(&mut plan, input, &request.context_json);
+                ground_named_filesystem_search(&mut plan, &effective_input, &request.context_json);
+                ground_standard_observation(&mut plan, &effective_input, &request.context_json);
+                if let Err(error) =
+                    validate_model_plan(&plan, &effective_input, &request.context_json)
+                {
                     parse_errors.push(format!("plan validation: {error}"));
                     let rejected_plan = serde_json::to_string(&plan)
                         .unwrap_or_else(|_| "<valid semantic plan>".to_string());
@@ -533,6 +552,27 @@ fn plan_ai_run_with(
     }
 
     let result = last_result.unwrap();
+    if let Some(plan) = host_compiled_fallback(input, &request.context_json) {
+        let diagnostics = request.diagnostics.then(|| PlannerDiagnostics {
+            id: diagnostic_id(input, &result.output),
+            parser_strategy: "host_compiled_after_repair".to_string(),
+            runtime_arguments: result.command_line.clone(),
+            exit_status: result.exit_code,
+            parse_errors: parse_errors.clone(),
+            raw_stdout: result.raw_stdout.clone(),
+            raw_stderr: result.raw_stderr.clone(),
+            retry_count: maximum_retries,
+        });
+        return semantic_to_provider_plan(
+            input,
+            plan,
+            request.surface,
+            &request.context_json,
+            None,
+            request.diagnostics.then_some(result.command_line),
+            diagnostics,
+        );
+    }
     let diagnostics = request.diagnostics.then(|| PlannerDiagnostics {
         id: diagnostic_id(input, &result.output),
         parser_strategy: "failed_after_repair".to_string(),
@@ -562,6 +602,39 @@ fn plan_ai_run_with(
     }
 }
 
+fn host_compiled_fallback(input: &str, context: &serde_json::Value) -> Option<SemanticPlan> {
+    let mut plan = SemanticPlan {
+        kind: SemanticPlanKind::Clarification,
+        payload: None,
+        target: None,
+        scope: None,
+        message: Some("No host action was compiled.".to_string()),
+        operation: None,
+        destination: None,
+    };
+    let effective_input = contextualized_request(input, context);
+    ground_navigation_plan(&mut plan, input, context);
+    ground_filesystem_mutation(&mut plan, input, context);
+    ground_local_script_execution(&mut plan, input, context);
+    ground_bounded_print_task(&mut plan, input);
+    ground_directory_size_observation(&mut plan, input, context);
+    ground_count_observation(&mut plan, &effective_input, context);
+    ground_current_project_run(&mut plan, input, context);
+    ground_named_filesystem_search(&mut plan, &effective_input, context);
+    ground_standard_observation(&mut plan, &effective_input, context);
+    ground_current_directory_observation(&mut plan, &effective_input, context);
+    normalize_shell_plan_for_host(&mut plan, input);
+    if matches!(
+        plan.kind,
+        SemanticPlanKind::ShellCommand | SemanticPlanKind::ChangeDirectory
+    ) && validate_model_plan(&plan, &effective_input, context).is_ok()
+    {
+        Some(plan)
+    } else {
+        None
+    }
+}
+
 fn constrain_plan_prompt(mut prompt: String, input: &str, context: &serde_json::Value) -> String {
     if context.get("failed_command").is_some() {
         prompt.push_str(
@@ -582,7 +655,7 @@ fn constrain_plan_prompt(mut prompt: String, input: &str, context: &serde_json::
     } else if request_is_state_change_intent(input) {
         if request_is_filesystem_change_intent(input) {
             prompt.push_str(
-                "\n\nHost request class: filesystem state change. Return kind filesystem_action with the requested operation and unresolved user target references. Do not invent completed paths or return shell_command. Return clarification only when a required target or destination is genuinely missing. The host resolves paths and controls risk and approval.",
+                "\n\nHost request class: filesystem state change. Return kind filesystem_action with the requested operation and unresolved user target references. For write_file or append_file, include content. Do not invent completed paths or return shell_command. Return clarification only when a required target, destination, or content value is genuinely missing. The host resolves paths and controls risk and approval.",
             );
         } else {
             prompt.push_str(
@@ -611,6 +684,31 @@ fn constrain_plan_prompt(mut prompt: String, input: &str, context: &serde_json::
         );
     }
     prompt
+}
+
+fn constrained_plan_kind(input: &str, context: &serde_json::Value) -> Option<SemanticPlanKind> {
+    if context.get("failed_command").is_some() || is_follow_up_refinement(input, context) {
+        return None;
+    }
+    if request_is_navigation_intent_with_context(input, context)
+        && !has_unresolved_reference(input, context)
+    {
+        return Some(SemanticPlanKind::ChangeDirectory);
+    }
+    if is_explanation_request(input) && !has_unresolved_reference(input, context) {
+        return Some(SemanticPlanKind::Answer);
+    }
+    if request_is_state_change_intent(input) {
+        if has_unresolved_reference(input, context) {
+            return None;
+        }
+        return Some(if request_is_filesystem_change_intent(input) {
+            SemanticPlanKind::FilesystemAction
+        } else {
+            SemanticPlanKind::ShellCommand
+        });
+    }
+    request_is_observation_intent(input).then_some(SemanticPlanKind::ShellCommand)
 }
 
 fn validation_repair_system_constraint(
@@ -669,6 +767,178 @@ fn normalize_shell_plan_for_host(plan: &mut SemanticPlan, input: &str) {
     plan.payload = Some(normalized);
 }
 
+fn ground_local_script_execution(
+    plan: &mut SemanticPlan,
+    input: &str,
+    context: &serde_json::Value,
+) {
+    let first = request_words(input).first().cloned().unwrap_or_default();
+    if !matches!(first.as_str(), "run" | "execute" | "launch") {
+        return;
+    }
+    let Some(reference) = requested_script_reference(input) else {
+        return;
+    };
+    let Some(cwd) = context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+    else {
+        return;
+    };
+    let Some(script) = resolve_local_script(&cwd, &reference) else {
+        return;
+    };
+    let arguments = requested_script_arguments(input);
+    let Some(command) = render_script_command(&script, &arguments) else {
+        return;
+    };
+    replace_with_shell_plan(plan, command);
+}
+
+fn requested_script_reference(input: &str) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+    let end = [".ps1", ".sh", ".py", ".js", ".cmd", ".bat"]
+        .into_iter()
+        .filter_map(|extension| lower.find(extension).map(|index| index + extension.len()))
+        .min()?;
+    let prefix = &input[..end];
+    let start = prefix
+        .rfind(['\'', '"'])
+        .map(|index| index + 1)
+        .unwrap_or_else(|| {
+            prefix
+                .rfind(char::is_whitespace)
+                .map(|index| index + 1)
+                .unwrap_or(0)
+        });
+    let reference = prefix[start..].trim().trim_matches(['\'', '"']);
+    (!reference.is_empty()).then(|| reference.to_string())
+}
+
+fn resolve_local_script(cwd: &Path, reference: &str) -> Option<PathBuf> {
+    let candidate = PathBuf::from(reference);
+    let rooted = if candidate.is_absolute() {
+        candidate
+    } else {
+        cwd.join(candidate)
+    };
+    if rooted.is_file() {
+        return Some(rooted);
+    }
+    if reference.contains(['/', '\\']) {
+        return None;
+    }
+    std::fs::read_dir(cwd).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        (path.is_file() && names_equal_on_platform(&entry.file_name().to_string_lossy(), reference))
+            .then_some(path)
+    })
+}
+
+fn requested_script_arguments(input: &str) -> Vec<String> {
+    let lower = input.to_ascii_lowercase();
+    let Some(start) = lower.rfind(" with ").map(|index| index + 6) else {
+        return Vec::new();
+    };
+    input[start..]
+        .split_whitespace()
+        .map(|value| value.trim_matches(['\'', '"', ',', ';']))
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("and"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn render_script_command(script: &Path, arguments: &[String]) -> Option<String> {
+    let extension = script.extension()?.to_string_lossy().to_ascii_lowercase();
+    let quoted_script = quote_host_value(&script.to_string_lossy());
+    let quoted_arguments = arguments
+        .iter()
+        .map(|argument| quote_host_value(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let suffix = (!quoted_arguments.is_empty())
+        .then(|| format!(" {quoted_arguments}"))
+        .unwrap_or_default();
+    let command = if cfg!(windows) {
+        match extension.as_str() {
+            "ps1" => format!(
+                "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File {quoted_script}{suffix}"
+            ),
+            "py" => format!("python {quoted_script}{suffix}"),
+            "js" => format!("node {quoted_script}{suffix}"),
+            "sh" => format!("bash {quoted_script}{suffix}"),
+            _ => return None,
+        }
+    } else {
+        match extension.as_str() {
+            "ps1" => format!("pwsh -NoLogo -NoProfile -File {quoted_script}{suffix}"),
+            "py" => format!("python3 {quoted_script}{suffix}"),
+            "js" => format!("node {quoted_script}{suffix}"),
+            "sh" => format!("sh {quoted_script}{suffix}"),
+            _ => return None,
+        }
+    };
+    Some(command)
+}
+
+fn ground_bounded_print_task(plan: &mut SemanticPlan, input: &str) {
+    let Some(message) = bounded_print_message(input) else {
+        return;
+    };
+    let quoted = quote_host_value(&message);
+    let command = if cfg!(windows) {
+        format!("powershell.exe -NoLogo -NoProfile -Command \"Write-Output {quoted}\"")
+    } else if request_words(input).iter().any(|word| word == "powershell") {
+        format!("pwsh -NoLogo -NoProfile -Command \"Write-Output {quoted}\"")
+    } else {
+        format!("sh -c \"printf '%s\\n' {quoted}\"")
+    };
+    replace_with_shell_plan(plan, command);
+}
+
+fn bounded_print_message(input: &str) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+    if !lower.contains("bounded")
+        || !lower.contains("exits")
+        || !(lower.contains(" task ") || lower.contains(" process "))
+    {
+        return None;
+    }
+    let (start, marker_len) = lower
+        .find(" prints ")
+        .map(|index| (index, " prints ".len()))
+        .or_else(|| lower.find(" print ").map(|index| (index, " print ".len())))?;
+    let remainder = &input[start + marker_len..];
+    let lower_remainder = remainder.to_ascii_lowercase();
+    let end = lower_remainder
+        .rfind(" and exits")
+        .unwrap_or(remainder.len());
+    let message = remainder[..end]
+        .trim()
+        .trim_matches(['\'', '"', '.', ',', ';']);
+    (!message.is_empty()).then(|| message.to_string())
+}
+
+fn quote_host_value(value: &str) -> String {
+    if cfg!(windows) {
+        format!("'{}'", value.replace('\'', "''"))
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn replace_with_shell_plan(plan: &mut SemanticPlan, command: String) {
+    plan.kind = SemanticPlanKind::ShellCommand;
+    plan.payload = Some(command);
+    plan.target = None;
+    plan.scope = None;
+    plan.message = None;
+    plan.operation = None;
+    plan.destination = None;
+}
+
 fn ground_current_directory_observation(
     plan: &mut SemanticPlan,
     input: &str,
@@ -692,6 +962,7 @@ fn ground_current_directory_observation(
         return;
     };
     let cwd = cwd.to_string_lossy();
+    let quoted_cwd = quote_host_value(&cwd);
     let mut grounded = command.clone();
     for token in shell_like_tokens(command) {
         let candidate = token.trim_matches(|character: char| {
@@ -700,6 +971,10 @@ fn ground_current_directory_observation(
                 '\'' | '"' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
             )
         });
+        if is_home_scope_alias(candidate) {
+            grounded = grounded.replace(candidate, &quoted_cwd);
+            continue;
+        }
         if candidate.is_empty() || candidate.contains(['*', '?', '$', '%']) {
             continue;
         }
@@ -711,12 +986,20 @@ fn ground_current_directory_observation(
     plan.payload = Some(grounded);
 }
 
+fn is_home_scope_alias(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "~" | "$home" | "${home}" | "$env:home" | "$env:userprofile" | "%home%" | "%userprofile%"
+    )
+}
+
 fn ground_directory_size_observation(
     plan: &mut SemanticPlan,
     input: &str,
     context: &serde_json::Value,
 ) {
-    if !requests_directory_size_ranking(input) {
+    let effective_request = contextualized_observation_request(input, context);
+    if !requests_directory_size_ranking(&effective_request) {
         return;
     }
     let Some(cwd) = context
@@ -727,8 +1010,14 @@ fn ground_directory_size_observation(
     else {
         return;
     };
-    let depth = requested_traversal_depth(input).unwrap_or(3).clamp(1, 10);
-    let count = requested_rank_count(input).unwrap_or(10).clamp(1, 100);
+    let depth = requested_traversal_depth(input)
+        .or_else(|| requested_traversal_depth(&effective_request))
+        .unwrap_or(3)
+        .clamp(1, 10);
+    let count = requested_rank_count(input)
+        .or_else(|| requested_rank_count(&effective_request))
+        .unwrap_or(10)
+        .clamp(1, 100);
     plan.kind = SemanticPlanKind::ShellCommand;
     plan.payload = Some(directory_size_observation_command(&cwd, depth, count));
     plan.target = None;
@@ -736,6 +1025,378 @@ fn ground_directory_size_observation(
     plan.message = None;
     plan.operation = None;
     plan.destination = None;
+}
+
+fn contextualized_observation_request(input: &str, context: &serde_json::Value) -> String {
+    contextualized_request(input, context)
+}
+
+fn contextualized_request(input: &str, context: &serde_json::Value) -> String {
+    if !is_follow_up_refinement(input, context)
+        && !recent_turn_requested_clarification(context, input)
+    {
+        return input.to_string();
+    }
+    let previous_request = recent_session_turn(context)
+        .and_then(|turn| turn.get("request"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    format!("{input} {previous_request}")
+}
+
+fn recent_turn_requested_clarification(context: &serde_json::Value, input: &str) -> bool {
+    let word_count = request_words(input).len();
+    if word_count == 0 || word_count > 12 {
+        return false;
+    }
+    recent_session_turn(context)
+        .and_then(|turn| turn.get("outcome"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|outcome| outcome.trim_end().ends_with('?'))
+}
+
+fn ground_current_project_run(plan: &mut SemanticPlan, input: &str, context: &serde_json::Value) {
+    let effective_request = contextualized_request(input, context);
+    if !requests_current_project_run(&effective_request) {
+        return;
+    }
+    let is_node_project = context
+        .get("project_type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|project_type| project_type.eq_ignore_ascii_case("node"));
+    if !is_node_project {
+        return;
+    }
+    let Some(tasks) = context
+        .get("available_tasks")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    let available = tasks
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    let Some(task) = select_project_run_task(&effective_request, &available) else {
+        return;
+    };
+    let manager = context
+        .get("package_manager")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("npm");
+    let command = match manager {
+        "yarn" => format!("yarn {task}"),
+        "pnpm" => format!("pnpm run {task}"),
+        "bun" => format!("bun run {task}"),
+        _ => format!("npm run {task}"),
+    };
+    plan.kind = SemanticPlanKind::ShellCommand;
+    plan.payload = Some(command);
+    plan.target = None;
+    plan.scope = None;
+    plan.message = None;
+    plan.operation = None;
+    plan.destination = None;
+}
+
+fn requests_current_project_run(input: &str) -> bool {
+    let words = request_words(input);
+    words
+        .iter()
+        .any(|word| matches!(word.as_str(), "run" | "start" | "launch" | "serve"))
+        && words.iter().any(|word| {
+            matches!(
+                word.as_str(),
+                "website" | "site" | "app" | "application" | "project"
+            )
+        })
+}
+
+fn select_project_run_task<'a>(input: &str, available: &[&'a str]) -> Option<&'a str> {
+    let words = request_words(input);
+    available
+        .iter()
+        .copied()
+        .find(|task| words.iter().any(|word| word.eq_ignore_ascii_case(task)))
+        .or_else(|| {
+            ["dev", "start", "serve", "preview"]
+                .iter()
+                .find_map(|preferred| {
+                    available
+                        .iter()
+                        .copied()
+                        .find(|task| task.eq_ignore_ascii_case(preferred))
+                })
+        })
+        .or_else(|| (available.len() == 1).then_some(available[0]))
+}
+
+fn ground_named_filesystem_search(
+    plan: &mut SemanticPlan,
+    input: &str,
+    context: &serde_json::Value,
+) {
+    if request_is_state_change_intent(input)
+        || request_is_navigation_intent_with_context(input, context)
+        || (!mentions_file_object(input) && !mentions_directory_object(input))
+    {
+        return;
+    }
+    let Some(target) = explicitly_named_target(input) else {
+        return;
+    };
+    let Some(cwd) = context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+    else {
+        return;
+    };
+    let recursive = request_has_recursive_scope(input);
+    plan.kind = SemanticPlanKind::ShellCommand;
+    plan.payload = Some(named_filesystem_search_command(
+        &cwd,
+        &target,
+        recursive,
+        mentions_directory_object(input) && !mentions_file_object(input),
+        mentions_file_object(input) && !mentions_directory_object(input),
+    ));
+    plan.target = None;
+    plan.scope = None;
+    plan.message = None;
+    plan.operation = None;
+    plan.destination = None;
+}
+
+#[cfg(windows)]
+fn named_filesystem_search_command(
+    cwd: &Path,
+    target: &str,
+    recursive: bool,
+    directories_only: bool,
+    files_only: bool,
+) -> String {
+    let path = cwd.to_string_lossy().replace('\'', "''");
+    let target = target.replace('\'', "''");
+    let recurse = if recursive { " -Recurse" } else { "" };
+    let kind = if directories_only {
+        " -Directory"
+    } else if files_only {
+        " -File"
+    } else {
+        ""
+    };
+    format!(
+        "Get-ChildItem -LiteralPath '{path}'{recurse}{kind} -Force -ErrorAction SilentlyContinue | Where-Object {{ $_.Name -ieq '{target}' }} | Select-Object -ExpandProperty FullName"
+    )
+}
+
+#[cfg(not(windows))]
+fn named_filesystem_search_command(
+    cwd: &Path,
+    target: &str,
+    recursive: bool,
+    directories_only: bool,
+    files_only: bool,
+) -> String {
+    let path = cwd.to_string_lossy().replace('\'', "'\\''");
+    let target = target.replace('\'', "'\\''");
+    let depth = if recursive { "" } else { " -maxdepth 1" };
+    let kind = if directories_only {
+        " -type d"
+    } else if files_only {
+        " -type f"
+    } else {
+        ""
+    };
+    format!("find '{path}'{depth}{kind} -name '{target}' -print")
+}
+
+fn ground_standard_observation(plan: &mut SemanticPlan, input: &str, context: &serde_json::Value) {
+    if request_is_state_change_intent(input)
+        || request_is_navigation_intent_with_context(input, context)
+    {
+        return;
+    }
+    let cwd = context
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir());
+    let command = if requests_hidden_entries(input) {
+        cwd.as_deref().map(hidden_entries_command)
+    } else if requests_large_files(input) {
+        cwd.as_deref().map(large_files_command)
+    } else if requests_content_search(input) {
+        cwd.as_deref().and_then(|cwd| {
+            requested_content_search_term(input).map(|term| content_search_command(cwd, &term))
+        })
+    } else if requests_existence_test(input) {
+        requested_file_reference(input).map(|target| existence_test_command(&target))
+    } else if requests_listening_ports(input) {
+        Some(listening_ports_command())
+    } else if requests_powershell_version(input) {
+        Some(powershell_version_command())
+    } else if requests_cargo_metadata(input) {
+        Some("cargo metadata --no-deps --format-version 1".to_string())
+    } else {
+        None
+    };
+    let Some(command) = command else {
+        return;
+    };
+    plan.kind = SemanticPlanKind::ShellCommand;
+    plan.payload = Some(command);
+    plan.target = None;
+    plan.scope = None;
+    plan.message = None;
+    plan.operation = None;
+    plan.destination = None;
+}
+
+fn request_contains_any(input: &str, candidates: &[&str]) -> bool {
+    request_words(input)
+        .iter()
+        .any(|word| candidates.iter().any(|candidate| word == candidate))
+}
+
+fn requests_hidden_entries(input: &str) -> bool {
+    request_contains_any(input, &["hidden"])
+        && request_contains_any(input, &["file", "files", "entry", "entries"])
+}
+
+fn requests_large_files(input: &str) -> bool {
+    request_contains_any(input, &["large", "largest", "big", "biggest"])
+        && request_contains_any(input, &["file", "files"])
+}
+
+fn requests_content_search(input: &str) -> bool {
+    request_contains_any(input, &["search", "find"])
+        && request_contains_any(
+            input,
+            &["word", "text", "content", "contains", "containing"],
+        )
+}
+
+fn requests_existence_test(input: &str) -> bool {
+    request_contains_any(input, &["test", "check"])
+        && request_contains_any(input, &["exist", "exists", "existing", "whether"])
+}
+
+fn requests_listening_ports(input: &str) -> bool {
+    request_contains_any(input, &["listening", "listen"])
+        && request_contains_any(input, &["port", "ports"])
+}
+
+fn requests_powershell_version(input: &str) -> bool {
+    request_contains_any(input, &["powershell", "pwsh"])
+        && request_contains_any(input, &["version"])
+}
+
+fn requests_cargo_metadata(input: &str) -> bool {
+    request_contains_any(input, &["cargo"]) && request_contains_any(input, &["metadata"])
+}
+
+fn requested_content_search_term(input: &str) -> Option<String> {
+    let tokens = input
+        .split_whitespace()
+        .map(|token| {
+            token.trim_matches(|character: char| {
+                character.is_whitespace()
+                    || matches!(character, '\'' | '"' | ',' | ';' | ':' | '(' | ')' | '?')
+            })
+        })
+        .collect::<Vec<_>>();
+    tokens.windows(2).find_map(|pair| {
+        matches!(
+            pair[0].to_ascii_lowercase().as_str(),
+            "word" | "text" | "content"
+        )
+        .then(|| pair[1].to_string())
+        .filter(|term| !term.is_empty())
+    })
+}
+
+fn requested_file_reference(input: &str) -> Option<String> {
+    input
+        .split_whitespace()
+        .map(|token| {
+            token.trim_matches(|character: char| {
+                character.is_whitespace()
+                    || matches!(character, '\'' | '"' | ',' | ';' | ':' | '(' | ')' | '?')
+            })
+        })
+        .find(|token| {
+            Path::new(token)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains('.') && !name.starts_with('.'))
+        })
+        .map(str::to_string)
+}
+
+fn hidden_entries_command(cwd: &Path) -> String {
+    let path = cwd.to_string_lossy().replace('\'', "''");
+    if cfg!(windows) {
+        format!("Get-ChildItem -LiteralPath '{path}' -Force")
+    } else {
+        format!("ls -la -- '{path}'")
+    }
+}
+
+fn large_files_command(cwd: &Path) -> String {
+    let path = cwd.to_string_lossy().replace('\'', "''");
+    if cfg!(windows) {
+        format!(
+            "Get-ChildItem -LiteralPath '{path}' -Recurse -File -Force -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 20 FullName, Length"
+        )
+    } else if cfg!(target_os = "macos") {
+        format!(
+            "find '{path}' -type f -exec stat -f '%z %N' {{}} + 2>/dev/null | sort -nr | head -n 20"
+        )
+    } else {
+        format!("find '{path}' -type f -printf '%s %p\\n' 2>/dev/null | sort -nr | head -n 20")
+    }
+}
+
+fn content_search_command(cwd: &Path, term: &str) -> String {
+    let path = cwd.to_string_lossy().replace('\'', "''");
+    let term = term.replace('\'', "''");
+    if cfg!(windows) {
+        format!(
+            "Get-ChildItem -LiteralPath '{path}' -Recurse -File -Force -ErrorAction SilentlyContinue | Select-String -SimpleMatch -Pattern '{term}'"
+        )
+    } else {
+        format!("grep -RInF -- '{term}' '{path}'")
+    }
+}
+
+fn existence_test_command(target: &str) -> String {
+    let target = target.replace('\'', "''");
+    if cfg!(windows) {
+        format!("Test-Path -LiteralPath '{target}'")
+    } else {
+        format!("test -e '{target}' && printf 'true\\n' || printf 'false\\n'")
+    }
+}
+
+fn listening_ports_command() -> String {
+    if cfg!(windows) {
+        "Get-NetTCPConnection -State Listen | Sort-Object LocalPort | Select-Object LocalAddress, LocalPort, OwningProcess, State".to_string()
+    } else if cfg!(target_os = "macos") {
+        "lsof -nP -iTCP -sTCP:LISTEN".to_string()
+    } else {
+        "ss -ltnp".to_string()
+    }
+}
+
+fn powershell_version_command() -> String {
+    if cfg!(windows) {
+        "$PSVersionTable.PSVersion".to_string()
+    } else {
+        "pwsh --version".to_string()
+    }
 }
 
 #[cfg(windows)]
@@ -816,14 +1477,35 @@ fn requested_traversal_depth(input: &str) -> Option<u32> {
 fn requested_rank_count(input: &str) -> Option<u32> {
     let words = request_words(input);
     words.windows(2).find_map(|pair| {
-        if matches!(
+        if pair[0] == "top" {
+            parse_small_count(&pair[1])
+        } else if matches!(
             pair[1].as_str(),
             "largest" | "biggest" | "smallest" | "newest" | "oldest"
         ) {
-            pair[0].parse().ok()
+            parse_small_count(&pair[0])
         } else {
             None
         }
+    })
+}
+
+fn parse_small_count(value: &str) -> Option<u32> {
+    value.parse().ok().or_else(|| {
+        [
+            ("one", 1),
+            ("two", 2),
+            ("three", 3),
+            ("four", 4),
+            ("five", 5),
+            ("six", 6),
+            ("seven", 7),
+            ("eight", 8),
+            ("nine", 9),
+            ("ten", 10),
+        ]
+        .into_iter()
+        .find_map(|(word, number)| (value == word).then_some(number))
     })
 }
 
@@ -944,6 +1626,9 @@ fn request_is_state_change_intent(input: &str) -> bool {
                 | "stop"
                 | "start"
                 | "restart"
+                | "run"
+                | "execute"
+                | "launch"
                 | "update"
                 | "upgrade"
                 | "clear"
@@ -963,6 +1648,8 @@ fn request_is_filesystem_change_intent(input: &str) -> bool {
         aish_ai::FilesystemOperation::Rename,
         aish_ai::FilesystemOperation::Move,
         aish_ai::FilesystemOperation::Copy,
+        aish_ai::FilesystemOperation::WriteFile,
+        aish_ai::FilesystemOperation::AppendFile,
     ]
     .iter()
     .any(|operation| filesystem_operation_matches_request(Some(operation), input));
@@ -1033,6 +1720,103 @@ fn count_observation_command(cwd: &Path, object: &str, recursive: bool) -> Strin
 
 fn validate_observation_constraints(input: &str, command: &str) -> Result<(), String> {
     let lower = command.to_ascii_lowercase();
+    let words = request_words(input);
+    let has_words = |candidates: &[&str]| {
+        words
+            .iter()
+            .any(|word| candidates.iter().any(|candidate| word == candidate))
+    };
+    let requests_hidden_entries =
+        has_words(&["hidden"]) && has_words(&["file", "files", "entry", "entries"]);
+    if requests_hidden_entries {
+        let shows_hidden = lower.contains("-force")
+            || (lower.contains("dir ") && lower.contains("/a") && !lower.contains("/a-h"))
+            || lower.contains("ls -a")
+            || lower.contains("ls -la")
+            || lower.contains("ls -al");
+        if !shows_hidden {
+            return Err(
+                "The command must include hidden entries rather than exclude them or filter unrelated files."
+                    .to_string(),
+            );
+        }
+    }
+    let requests_large_files =
+        has_words(&["large", "largest", "big", "biggest"]) && has_words(&["file", "files"]);
+    if requests_large_files
+        && !["length", "size", "du "]
+            .iter()
+            .any(|marker| lower.contains(marker))
+    {
+        return Err(
+            "A large-file command must inspect or sort by file size, not filter only by filename."
+                .to_string(),
+        );
+    }
+    let requests_content_search = has_words(&["search", "find"])
+        && has_words(&["word", "text", "content", "contains", "containing"]);
+    if requests_content_search
+        && !["select-string", "rg ", "grep ", "findstr "]
+            .iter()
+            .any(|marker| lower.contains(marker))
+    {
+        return Err(
+            "A content-search request must inspect file contents rather than filenames."
+                .to_string(),
+        );
+    }
+    let requests_existence_test =
+        has_words(&["test", "check"]) && has_words(&["exist", "exists", "existing", "whether"]);
+    if requests_existence_test
+        && ![
+            "test-path",
+            "path.exists",
+            " -e ",
+            " -f ",
+            "test -e",
+            "test -f",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return Err(
+            "An existence check must test the path and report whether it exists.".to_string(),
+        );
+    }
+    let requests_listening_ports =
+        has_words(&["listening", "listen"]) && has_words(&["port", "ports"]);
+    if requests_listening_ports {
+        let uses_port_tool = ["get-nettcpconnection", "netstat", "ss ", "lsof"]
+            .iter()
+            .any(|marker| lower.contains(marker));
+        let request_has_port_number = words
+            .iter()
+            .any(|word| word.parse::<u16>().is_ok_and(|port| port > 0));
+        let command_has_fixed_port = lower
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|token| token.parse::<u16>().is_ok_and(|port| port > 0));
+        if !uses_port_tool || (!request_has_port_number && command_has_fixed_port) {
+            return Err(
+                "A listening-port request must inspect listeners without inventing a specific port filter."
+                    .to_string(),
+            );
+        }
+    }
+    let requests_powershell_version = has_words(&["powershell", "pwsh"]) && has_words(&["version"]);
+    if requests_powershell_version
+        && !["psversiontable", "pwsh --version", "powershell --version"]
+            .iter()
+            .any(|marker| lower.contains(marker))
+    {
+        return Err(
+            "The command must query the actual PowerShell version without inventing a cmdlet."
+                .to_string(),
+        );
+    }
+    let requests_cargo_metadata = has_words(&["cargo"]) && has_words(&["metadata"]);
+    if requests_cargo_metadata && !lower.contains("cargo metadata") {
+        return Err("Cargo workspace metadata must be queried with cargo metadata.".to_string());
+    }
     if let Some(depth) = requested_traversal_depth(input) {
         let preserves_depth = [
             format!("-depth {depth}"),
@@ -1363,7 +2147,10 @@ fn validate_model_plan(
             for step in &commands {
                 validate_shell_command_dialect(step)?;
             }
-            if has_unresolved_reference(input, context) {
+            if has_unresolved_reference(input, context)
+                && requested_script_reference(input).is_none()
+                && bounded_print_message(input).is_none()
+            {
                 return if is_navigation_shell_command(command) {
                     Err(
                         "A navigation request contains an unresolved reference; ask a clarification instead."
@@ -1423,6 +2210,7 @@ fn validate_model_plan(
             if command_has_recursive_flag(command)
                 && !recursive_scope_allowed(input, command, context)
                 && !is_cleanup_request(input)
+                && classify_risk(command).risk == RiskLevel::Low
             {
                 return Err(
                     "A command must not add recursive scope unless the user requested it."
@@ -1449,7 +2237,7 @@ fn validate_model_plan(
         SemanticPlanKind::FilesystemAction => {
             if !filesystem_operation_matches_request(plan.operation.as_ref(), input) {
                 return Err(
-                    "filesystem_action is only for an explicitly requested create, delete, rename, move, or copy change. Use change_directory for navigation, shell_command for observation, or answer for explanation."
+                    "filesystem_action is only for an explicitly requested create, delete, rename, move, copy, write, or append change. Use change_directory for navigation, shell_command for observation, or answer for explanation."
                         .to_string(),
                 );
             }
@@ -2691,9 +3479,9 @@ mod planner_tests {
     #[test]
     fn validation_retry_changes_the_system_constraint_after_a_wrong_plan_kind() {
         let valid_command = if cfg!(windows) {
-            "Get-ChildItem -Force"
+            "Get-ChildItem -Directory"
         } else {
-            "ls -la"
+            "find . -maxdepth 1 -type d"
         };
         let valid_plan =
             serde_json::json!({ "kind": "shell_command", "payload": valid_command }).to_string();
@@ -2704,7 +3492,7 @@ mod planner_tests {
             result(&valid_plan),
         ]));
         let system_prompts = RefCell::new(Vec::new());
-        let input = "show hidden files here";
+        let input = "list child directories only";
         let plan = plan_ai_run_with(
             input,
             request(serde_json::json!({ "cwd": "." })),
@@ -2742,6 +3530,92 @@ mod planner_tests {
         assert!(!request_is_observation_intent(
             "create a directory named Transit Bay"
         ));
+    }
+
+    #[test]
+    fn confident_request_classes_narrow_the_generation_grammar() {
+        let context = serde_json::json!({ "cwd": "." });
+        assert_eq!(
+            constrained_plan_kind("explain what git status does", &context),
+            Some(SemanticPlanKind::Answer)
+        );
+        assert_eq!(
+            constrained_plan_kind("show hidden files here", &context),
+            Some(SemanticPlanKind::ShellCommand)
+        );
+        assert_eq!(
+            constrained_plan_kind("go to the src folder", &context),
+            Some(SemanticPlanKind::ChangeDirectory)
+        );
+        assert_eq!(
+            constrained_plan_kind("create a folder named archive", &context),
+            Some(SemanticPlanKind::FilesystemAction)
+        );
+        assert_eq!(
+            constrained_plan_kind("write hello into Result File.txt", &context),
+            Some(SemanticPlanKind::FilesystemAction)
+        );
+        assert_eq!(
+            constrained_plan_kind("append second dynamic line to Result File.txt", &context),
+            Some(SemanticPlanKind::FilesystemAction)
+        );
+        assert_eq!(constrained_plan_kind("rename this file", &context), None);
+    }
+
+    #[test]
+    fn named_local_scripts_are_resolved_and_rendered_by_the_host() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-script-execution-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("fixture");
+        let script = root.join("args-task.ps1");
+        std::fs::write(&script, "param($First,$Second)").expect("script");
+        let context = serde_json::json!({ "cwd": root });
+        let mut plan = SemanticPlan {
+            kind: SemanticPlanKind::Answer,
+            payload: None,
+            target: None,
+            scope: None,
+            message: Some("model chose the wrong action".to_string()),
+            operation: None,
+            destination: None,
+        };
+
+        ground_local_script_execution(&mut plan, "run args-task.ps1 with alpha and beta", &context);
+
+        assert_eq!(plan.kind, SemanticPlanKind::ShellCommand);
+        let command = plan.payload.expect("command");
+        assert!(command.contains(&script.to_string_lossy().to_string()));
+        assert!(command.contains("'alpha'"));
+        assert!(command.contains("'beta'"));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn bounded_print_tasks_are_synchronous_host_commands() {
+        let mut plan = SemanticPlan {
+            kind: SemanticPlanKind::Clarification,
+            payload: None,
+            target: None,
+            scope: None,
+            message: Some("model requested unnecessary detail".to_string()),
+            operation: None,
+            destination: None,
+        };
+
+        ground_bounded_print_task(
+            &mut plan,
+            "start a bounded PowerShell task that prints TERMINAL_TASK_OK and exits",
+        );
+
+        assert_eq!(plan.kind, SemanticPlanKind::ShellCommand);
+        let command = plan.payload.expect("command");
+        assert!(command.contains("TERMINAL_TASK_OK"));
+        assert!(!command.to_ascii_lowercase().contains("start-process"));
     }
 
     #[test]
@@ -2915,6 +3789,39 @@ mod planner_tests {
 
         let command = plan.payload.expect("command");
         assert!(!command.contains(invented));
+        assert!(command.contains(&cwd.to_string_lossy().to_string()));
+        fs::remove_dir_all(cwd).expect("cleanup");
+    }
+
+    #[test]
+    fn current_directory_observation_replaces_a_model_home_alias() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let cwd = std::env::temp_dir().join(format!("aish-observation-home-{unique}"));
+        fs::create_dir_all(&cwd).expect("cwd");
+        let alias = if cfg!(windows) { "$env:HOME" } else { "$HOME" };
+        let mut plan = SemanticPlan {
+            kind: SemanticPlanKind::ShellCommand,
+            payload: Some(format!(
+                "Get-ChildItem -Path {alias} -Recurse -Filter 'package.json'"
+            )),
+            target: None,
+            scope: None,
+            message: None,
+            operation: None,
+            destination: None,
+        };
+
+        ground_current_directory_observation(
+            &mut plan,
+            "find every package.json below here",
+            &serde_json::json!({ "cwd": cwd }),
+        );
+
+        let command = plan.payload.expect("command");
+        assert!(!command.contains(alias));
         assert!(command.contains(&cwd.to_string_lossy().to_string()));
         fs::remove_dir_all(cwd).expect("cleanup");
     }
@@ -3416,6 +4323,32 @@ mod planner_tests {
     }
 
     #[test]
+    fn directory_deletion_may_use_recurse_without_requesting_recursive_search() {
+        let root = std::env::temp_dir().join(format!(
+            "aish-delete-directory-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = root.join("Disposable Folder 8427");
+        std::fs::create_dir_all(&target).expect("fixture");
+        let context = serde_json::json!({ "cwd": root });
+        let plan = plan_from_input(
+            "delete the folder named Disposable Folder 8427",
+            &[
+                r#"{"kind":"filesystem_action","operation":"delete","target":"Disposable Folder 8427","scope":"current directory"}"#,
+            ],
+            context,
+        );
+
+        assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
+        assert_eq!(plan.risk, RiskLevel::High);
+        assert!(plan.command.as_deref().unwrap().contains("-Recurse"));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn mismatched_filesystem_action_is_repaired_before_grounding() {
         let plan = plan_from_input(
             "show hidden files here",
@@ -3458,7 +4391,7 @@ mod planner_tests {
         let plan = plan_from_input(
             "i need sizes in gb",
             &[
-                r#"{"kind":"shell_command","payload":"Get-ChildItem -Recurse -Directory | ForEach-Object { [PSCustomObject]@{ FullName = $_.FullName; SizeGB = [math]::Round(((Get-ChildItem -LiteralPath $_.FullName -File -Recurse | Measure-Object Length -Sum).Sum / 1GB), 2) } }"}"#,
+                r#"{"kind":"shell_command","payload":"Get-ChildItem -Recurse -Depth 3 -Directory | ForEach-Object { [PSCustomObject]@{ FullName = $_.FullName; SizeGB = [math]::Round(((Get-ChildItem -LiteralPath $_.FullName -File -Recurse | Measure-Object Length -Sum).Sum / 1GB), 2) } }"}"#,
             ],
             context,
         );
@@ -3474,6 +4407,247 @@ mod planner_tests {
             .command
             .as_deref()
             .is_some_and(|command| command.contains("-Recurse")));
+    }
+
+    #[test]
+    fn directory_size_follow_up_is_synthesized_from_recent_successful_objective() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let cwd = std::env::temp_dir().join(format!("aish-directory-follow-up-{unique}"));
+        fs::create_dir_all(&cwd).expect("cwd");
+        let context = serde_json::json!({
+            "cwd": cwd.clone(),
+            "session_commands": [{
+                "intent": "find the 10 largest folders and subfolders up to 3 levels",
+                "command": "Get-ChildItem -Recurse -Depth 3 -Directory | Select-Object -First 10",
+                "status": "success",
+                "reason": "fixture"
+            }],
+            "session_turns": [{
+                "request": "find the 10 largest folders and subfolders up to 3 levels",
+                "outcome": "listed the ten largest directories"
+            }]
+        });
+        let plan = plan_from_input(
+            "i need the sizes in gb",
+            &[r#"{"kind":"filesystem_action","operation":"create_directory","target":"invented"}"#],
+            context,
+        );
+
+        assert!(
+            matches!(
+                plan.action,
+                ProviderPlanAction::ShellCommand | ProviderPlanAction::ApprovalRequired
+            ),
+            "{plan:?}"
+        );
+        let command = plan.command.expect("host-synthesized directory metrics");
+        assert!(command.contains('3'));
+        assert!(command.contains("10"));
+        assert!(command.to_ascii_lowercase().contains("gb"));
+        let _ = fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn worded_top_count_overrides_previous_directory_ranking_limit() {
+        assert_eq!(requested_rank_count("only show the top five"), Some(5));
+        assert_eq!(requested_rank_count("show the 7 largest folders"), Some(7));
+    }
+
+    #[test]
+    fn current_project_run_uses_a_discovered_task_after_clarification() {
+        let context = serde_json::json!({
+            "cwd": ".",
+            "project_type": "node",
+            "package_manager": "npm",
+            "available_tasks": ["build", "dev", "test"],
+            "session_turns": [{
+                "request": "run this React website",
+                "outcome": "Which existing directory contains the website?"
+            }]
+        });
+        let plan = plan_from_input(
+            "use the current folder",
+            &[r#"{"kind":"shell_command","payload":"dir"}"#],
+            context,
+        );
+
+        assert_eq!(
+            plan.action,
+            ProviderPlanAction::ApprovalRequired,
+            "{plan:?}"
+        );
+        assert_eq!(plan.command.as_deref(), Some("npm run dev"));
+        assert!(plan.needs_approval);
+    }
+
+    #[test]
+    fn current_project_run_survives_two_malformed_model_responses() {
+        let context = serde_json::json!({
+            "cwd": ".",
+            "project_type": "node",
+            "package_manager": "npm",
+            "available_tasks": ["build", "dev", "test"],
+            "session_turns": [{
+                "request": "run this React website",
+                "outcome": "Which existing directory contains the website?"
+            }]
+        });
+        let plan = plan_from_input(
+            "use the current folder",
+            &[
+                "not valid JSON",
+                r#"{"kind":"filesystem_action","operation":"move","target":"current"}"#,
+            ],
+            context,
+        );
+
+        assert_eq!(
+            plan.action,
+            ProviderPlanAction::ApprovalRequired,
+            "{plan:?}"
+        );
+        assert_eq!(plan.command.as_deref(), Some("npm run dev"));
+        assert_eq!(
+            plan.diagnostics
+                .as_ref()
+                .map(|value| value.parser_strategy.as_str()),
+            Some("host_compiled_after_repair")
+        );
+    }
+
+    #[test]
+    fn recursive_named_search_is_compiled_from_recent_clarification() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let cwd = std::env::temp_dir().join(format!("aish-named-search-{unique}"));
+        fs::create_dir_all(&cwd).expect("cwd");
+        let target = format!("Orbit-{unique}");
+        let context = serde_json::json!({
+            "cwd": cwd.clone(),
+            "session_turns": [{
+                "request": format!("where is the folder named {target} under this directory"),
+                "outcome": "Should subdirectories be included in the search?"
+            }]
+        });
+        let plan = plan_from_input(
+            "include all subdirectories",
+            &[r#"{"kind":"shell_command","payload":"Get-ChildItem C:\\invented -Recurse"}"#],
+            context,
+        );
+
+        assert_eq!(plan.action, ProviderPlanAction::ShellCommand, "{plan:?}");
+        let command = plan.command.expect("host-synthesized named search");
+        assert!(command.contains(&target));
+        assert!(command.to_ascii_lowercase().contains("recurse") || command.contains("find "));
+        assert!(command.contains(&cwd.to_string_lossy().to_string()));
+        let _ = fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn observation_validation_rejects_semantically_wrong_but_parseable_commands() {
+        let cases = [
+            ("show hidden files here", "dir /a-h", "Get-ChildItem -Force"),
+            (
+                "find large files in this project",
+                "Get-ChildItem -Recurse -Filter *.json",
+                "Get-ChildItem -Recurse -File | Sort-Object Length -Descending",
+            ),
+            (
+                "search recursively for the word TODO",
+                "Get-ChildItem -Recurse -Filter TODO",
+                "Get-ChildItem -Recurse -File | Select-String TODO",
+            ),
+            (
+                "test whether package.json exists",
+                "Get-ChildItem package.json",
+                "Test-Path package.json",
+            ),
+            (
+                "show listening TCP ports",
+                "netstat -ano | findstr :80",
+                "netstat -ano",
+            ),
+            (
+                "show the current PowerShell version",
+                "Get-Command Get-PSVersion",
+                "$PSVersionTable.PSVersion",
+            ),
+            (
+                "show Cargo workspace metadata without building",
+                "Get-ChildItem Cargo.toml",
+                "cargo metadata --no-deps",
+            ),
+        ];
+
+        for (input, invalid, valid) in cases {
+            assert!(
+                validate_observation_constraints(input, invalid).is_err(),
+                "{input}: {invalid}"
+            );
+            assert!(
+                validate_observation_constraints(input, valid).is_ok(),
+                "{input}: {valid}"
+            );
+        }
+    }
+
+    #[test]
+    fn standard_observations_are_compiled_by_the_host_for_each_intent_family() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let cwd = std::env::temp_dir().join(format!("aish-standard-observations-{unique}"));
+        fs::create_dir_all(&cwd).expect("cwd");
+        let context = serde_json::json!({ "cwd": cwd.clone() });
+        let hidden_marker = if cfg!(windows) { "force" } else { "ls -" };
+        let listening_marker = if cfg!(windows) {
+            "listen"
+        } else if cfg!(target_os = "macos") {
+            "lsof"
+        } else {
+            "ss -l"
+        };
+        let cases = [
+            ("show hidden files here", hidden_marker),
+            ("find large files in this project", "length"),
+            ("search recursively for the word TODO", "todo"),
+            ("test whether package.json exists", "package.json"),
+            ("show listening TCP ports", listening_marker),
+            ("show the current PowerShell version", "version"),
+            (
+                "show Cargo workspace metadata without building",
+                "cargo metadata",
+            ),
+        ];
+
+        for (input, marker) in cases {
+            let mut plan = SemanticPlan {
+                kind: SemanticPlanKind::ShellCommand,
+                payload: Some("invented-command".to_string()),
+                target: None,
+                scope: None,
+                message: None,
+                operation: None,
+                destination: None,
+            };
+            ground_standard_observation(&mut plan, input, &context);
+            let command = plan.payload.expect("host command");
+            assert!(
+                command.to_ascii_lowercase().contains(marker),
+                "{input}: {command}"
+            );
+            assert!(
+                validate_observation_constraints(input, &command).is_ok(),
+                "{input}: {command}"
+            );
+        }
+        let _ = fs::remove_dir_all(cwd);
     }
 
     #[test]

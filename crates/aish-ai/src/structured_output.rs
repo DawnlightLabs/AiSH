@@ -1,10 +1,12 @@
 use std::process::Command;
 
+use crate::SemanticPlanKind;
+
 pub(crate) const SEMANTIC_PLAN_JSON_SCHEMA: &str = r#"{
   "oneOf": [
     {"type":"object","properties":{"kind":{"const":"shell_command"},"payload":{"type":"string","minLength":1}},"required":["kind","payload"],"additionalProperties":false},
     {"type":"object","properties":{"kind":{"const":"change_directory"},"target":{"type":"string","minLength":1},"scope":{"type":"string"}},"required":["kind","target"],"additionalProperties":false},
-    {"type":"object","properties":{"kind":{"const":"filesystem_action"},"operation":{"enum":["create_file","create_directory","delete","rename","move","copy"]},"target":{"type":"string","minLength":1},"destination":{"type":"string","minLength":1},"scope":{"type":"string"}},"required":["kind","operation","target"],"additionalProperties":false},
+    {"type":"object","properties":{"kind":{"const":"filesystem_action"},"operation":{"enum":["create_file","create_directory","delete","rename","move","copy","write_file","append_file"]},"target":{"type":"string","minLength":1},"destination":{"type":"string","minLength":1},"content":{"type":"string","minLength":1},"scope":{"type":"string"}},"required":["kind","operation","target"],"additionalProperties":false},
     {"type":"object","properties":{"kind":{"const":"answer"},"message":{"type":"string","minLength":1}},"required":["kind","message"],"additionalProperties":false},
     {"type":"object","properties":{"kind":{"const":"clarification"},"message":{"type":"string","minLength":1}},"required":["kind","message"],"additionalProperties":false}
   ]
@@ -12,7 +14,7 @@ pub(crate) const SEMANTIC_PLAN_JSON_SCHEMA: &str = r#"{
 
 pub(crate) const SEMANTIC_PLAN_GBNF: &str = r#"
 root ::= plan ws trailer?
-plan ::= shell | navigation | navigation-scoped | filesystem | filesystem-destination | filesystem-scoped | filesystem-destination-scoped | answer | clarification
+plan ::= shell | navigation | navigation-scoped | filesystem | filesystem-destination | filesystem-scoped | filesystem-destination-scoped | filesystem-content | filesystem-content-scoped | answer | clarification
 shell ::= "{" ws "\"kind\"" ws ":" ws "\"shell_command\"" ws "," ws "\"payload\"" ws ":" ws string ws "}" ws
 navigation ::= "{" ws "\"kind\"" ws ":" ws "\"change_directory\"" ws "," ws "\"target\"" ws ":" ws string ws "}" ws
 navigation-scoped ::= "{" ws "\"kind\"" ws ":" ws "\"change_directory\"" ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"scope\"" ws ":" ws string ws "}" ws
@@ -20,7 +22,10 @@ filesystem ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"
 filesystem-destination ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-operation ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"destination\"" ws ":" ws string ws "}" ws
 filesystem-scoped ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-operation ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"scope\"" ws ":" ws string ws "}" ws
 filesystem-destination-scoped ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-operation ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"destination\"" ws ":" ws string ws "," ws "\"scope\"" ws ":" ws string ws "}" ws
-filesystem-operation ::= "\"create_file\"" | "\"create_directory\"" | "\"delete\"" | "\"rename\"" | "\"move\"" | "\"copy\""
+filesystem-content ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-write-operation ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"content\"" ws ":" ws string ws "}" ws
+filesystem-content-scoped ::= "{" ws "\"kind\"" ws ":" ws "\"filesystem_action\"" ws "," ws "\"operation\"" ws ":" ws filesystem-write-operation ws "," ws "\"target\"" ws ":" ws string ws "," ws "\"content\"" ws ":" ws string ws "," ws "\"scope\"" ws ":" ws string ws "}" ws
+filesystem-operation ::= "\"create_file\"" | "\"create_directory\"" | "\"delete\"" | "\"rename\"" | "\"move\"" | "\"copy\"" | filesystem-write-operation
+filesystem-write-operation ::= "\"write_file\"" | "\"append_file\""
 answer ::= "{" ws "\"kind\"" ws ":" ws "\"answer\"" ws "," ws "\"message\"" ws ":" ws string ws "}" ws
 clarification ::= "{" ws "\"kind\"" ws ":" ws "\"clarification\"" ws "," ws "\"message\"" ws ":" ws string ws "}" ws
 string ::= "\"" char+ "\""
@@ -29,6 +34,31 @@ hex ::= [0-9a-fA-F]
 ws ::= [ \t\n\r]*
 trailer ::= "<|im_start|>" | "<|im_end|>"
 "#;
+
+pub(crate) fn semantic_plan_grammar_for(kind: SemanticPlanKind) -> String {
+    let production = match kind {
+        SemanticPlanKind::ShellCommand => "shell",
+        SemanticPlanKind::ChangeDirectory => "navigation | navigation-scoped",
+        SemanticPlanKind::FilesystemAction => {
+            "filesystem | filesystem-destination | filesystem-scoped | filesystem-destination-scoped | filesystem-content | filesystem-content-scoped"
+        }
+        SemanticPlanKind::Answer => "answer",
+        SemanticPlanKind::Clarification => "clarification",
+    };
+    grammar_with_plan_production(production)
+}
+
+pub(crate) fn failed_command_recovery_grammar() -> String {
+    grammar_with_plan_production("shell | answer")
+}
+
+fn grammar_with_plan_production(production: &str) -> String {
+    SEMANTIC_PLAN_GBNF.replacen(
+        "plan ::= shell | navigation | navigation-scoped | filesystem | filesystem-destination | filesystem-scoped | filesystem-destination-scoped | filesystem-content | filesystem-content-scoped | answer | clarification",
+        &format!("plan ::= {production}"),
+        1,
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StructuredOutputMode {
@@ -119,10 +149,16 @@ mod tests {
             "message",
             "operation",
             "destination",
+            "content",
         ] {
             assert!(SEMANTIC_PLAN_GBNF.contains(field));
         }
         assert!(SEMANTIC_PLAN_GBNF.contains("<|im_start|>"));
+        let answer_only = semantic_plan_grammar_for(SemanticPlanKind::Answer);
+        assert!(answer_only.contains("plan ::= answer"));
+        assert!(!answer_only.contains("plan ::= shell |"));
+        let recovery = failed_command_recovery_grammar();
+        assert!(recovery.contains("plan ::= shell | answer"));
     }
 
     #[test]

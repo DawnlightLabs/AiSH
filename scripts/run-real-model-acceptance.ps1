@@ -27,7 +27,7 @@ if (-not $ValidateOnly) {
     New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $fixtureRoot $simple) $nearest) | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $fixtureRoot "left") $ambiguous) | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $fixtureRoot "right") $ambiguous) | Out-Null
-    Set-Content -LiteralPath (Join-Path $fixtureRoot "package.json") -Value '{"private":true}' -NoNewline
+    Set-Content -LiteralPath (Join-Path $fixtureRoot "package.json") -Value '{"private":true,"scripts":{"dev":"vite"}}' -NoNewline
     Set-Content -LiteralPath (Join-Path $fixtureRoot "Cargo.toml") -Value '[workspace]' -NoNewline
     Set-Content -LiteralPath (Join-Path $fixtureRoot "note-$suffix.txt") -Value 'fixture' -NoNewline
     Set-Content -LiteralPath (Join-Path (Join-Path $fixtureRoot $simple) "package.json") -Value '{"private":true}' -NoNewline
@@ -42,7 +42,9 @@ function Add-Case {
         [string]$Mode = "plan",
         [Nullable[int]]$ExitCode = $null,
         [string]$Stderr = "",
-        [string[]]$RequiredCommandPatterns = @()
+        [string[]]$RequiredCommandPatterns = @(),
+        [string[]]$RequiredCommandRegexes = @(),
+        [string]$ContextJson = ""
     )
     $cases.Add([pscustomobject]@{
         category = $Category
@@ -52,6 +54,8 @@ function Add-Case {
         exit_code = $ExitCode
         stderr = $Stderr
         required_command_patterns = $RequiredCommandPatterns
+        required_command_regexes = $RequiredCommandRegexes
+        context_json = $ContextJson
     })
 }
 
@@ -66,6 +70,53 @@ function Redact-PathText {
     }
     $escapedPath = $Path.Replace('\', '\\')
     return $Text.Replace($escapedPath, $Replacement).Replace($Path, $Replacement)
+}
+
+function Get-CommandQualityFailures {
+    param(
+        [string]$Command,
+        [string]$Category
+    )
+    $failures = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($Command)) {
+        return @("Generated action did not contain a command.")
+    }
+    if ($env:OS -eq "Windows_NT") {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+            $Command,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        foreach ($parseError in @($parseErrors)) {
+            $failures.Add("PowerShell syntax error: $($parseError.Message)")
+        }
+        if ($Category -eq "read_only" -and $parseErrors.Count -eq 0) {
+            $commandAsts = $ast.FindAll(
+                { param($node) $node -is [System.Management.Automation.Language.CommandAst] },
+                $true
+            )
+            foreach ($commandAst in $commandAsts) {
+                $commandName = $commandAst.GetCommandName()
+                if (
+                    -not [string]::IsNullOrWhiteSpace($commandName) -and
+                    $null -eq (Get-Command -Name $commandName -ErrorAction SilentlyContinue)
+                ) {
+                    $failures.Add("Command is not available in the test shell: $commandName")
+                }
+            }
+        }
+    } else {
+        $shell = Get-Command -Name "sh" -ErrorAction SilentlyContinue
+        if ($null -ne $shell) {
+            $process = Start-Process -FilePath $shell.Source -ArgumentList @("-n", "-c", $Command) -Wait -PassThru -NoNewWindow
+            if ($process.ExitCode -ne 0) {
+                $failures.Add("POSIX shell syntax validation failed with exit code $($process.ExitCode).")
+            }
+        }
+    }
+    return @($failures | Select-Object -Unique)
 }
 
 # 25 navigation cases with generated, non-personal fixture names.
@@ -96,36 +147,36 @@ Add-Case navigation "go to missing-$suffix" @("fallback")
 Add-Case navigation "open the directory named $simple relative to here" @("change_directory")
 
 # 25 read-only shell cases.
-Add-Case read_only "show hidden files here" @("shell_command", "fallback")
-Add-Case read_only "find large files in this project" @("shell_command")
-Add-Case read_only "show the current directory" @("shell_command", "fallback")
+Add-Case read_only "show hidden files here" @("shell_command") -RequiredCommandRegexes @('(?i)(-Force\b|(?:^|\s)ls\s+-[^ ]*a)')
+Add-Case read_only "find large files in this project" @("shell_command") -RequiredCommandRegexes @('(?i)(Length|Size|du\s)')
+Add-Case read_only "show the current directory" @("shell_command", "fallback") -RequiredCommandRegexes @('(?i)(Get-Location|(?:^|\s)pwd(?:\s|$))')
 $directoryMetricPatterns = if ($env:OS -eq "Windows_NT") {
     @("-Depth 3", "-First 10", "Measure-Object", "SizeGB")
 } else {
     @("du ", "head -n 10", "GB")
 }
 Add-Case read_only "find the 10 largest folders and sub folders up to 3 levels in this folder" @("shell_command", "approval_required") -RequiredCommandPatterns $directoryMetricPatterns
-Add-Case read_only "find every package.json below here" @("shell_command")
-Add-Case read_only "show git status" @("shell_command")
-Add-Case read_only "show the last five git commits" @("shell_command")
-Add-Case read_only "list changed files in git" @("shell_command")
-Add-Case read_only "check which process is using port 3000" @("shell_command")
-Add-Case read_only "show running processes using the most memory" @("shell_command")
-Add-Case read_only "list environment variables" @("shell_command")
-Add-Case read_only "show the installed Rust compiler version" @("shell_command", "approval_required", "fallback")
-Add-Case read_only "show the installed Node version" @("shell_command")
-Add-Case read_only "count files in this directory" @("shell_command")
-Add-Case read_only "search recursively for the word TODO" @("shell_command")
-Add-Case read_only "show disk free space" @("shell_command")
-Add-Case read_only "list child directories only" @("shell_command")
-Add-Case read_only "show the size of Cargo.toml" @("shell_command", "fallback")
-Add-Case read_only "test whether package.json exists" @("shell_command")
-Add-Case read_only "show listening TCP ports" @("shell_command")
-Add-Case read_only "display the PATH without changing it" @("shell_command", "fallback")
-Add-Case read_only "find files modified today" @("shell_command")
-Add-Case read_only "show the current PowerShell version" @("shell_command")
-Add-Case read_only "list Git branches" @("shell_command")
-Add-Case read_only "show Cargo workspace metadata without building" @("shell_command")
+Add-Case read_only "find every package.json below here" @("shell_command") -RequiredCommandRegexes @('(?i)package\.json', '(-Recurse\b|(?:^|\s)find\s)')
+Add-Case read_only "show git status" @("shell_command") -RequiredCommandRegexes @('(?i)\bgit\s+status\b')
+Add-Case read_only "show the last five git commits" @("shell_command") -RequiredCommandRegexes @('(?i)\bgit\s+log\b', '(?i)(-5\b|-n\s*5\b|--max-count(?:=|\s+)5\b)')
+Add-Case read_only "list changed files in git" @("shell_command") -RequiredCommandRegexes @('(?i)\bgit\s+(status|diff)\b')
+Add-Case read_only "check which process is using port 3000" @("shell_command") -RequiredCommandRegexes @('3000', '(?i)(Get-NetTCPConnection|netstat|lsof|ss\s)')
+Add-Case read_only "show running processes using the most memory" @("shell_command") -RequiredCommandRegexes @('(?i)(Get-Process|ps\s)', '(?i)(WorkingSet|Memory|RSS|Sort-Object|sort\s)')
+Add-Case read_only "list environment variables" @("shell_command") -RequiredCommandRegexes @('(?i)(Env:|Get-ChildItem\s+Env:|printenv|(?:^|\s)env(?:\s|$))')
+Add-Case read_only "show the installed Rust compiler version" @("shell_command", "approval_required", "fallback") -RequiredCommandRegexes @('(?i)\brustc\s+(--version|-V)\b')
+Add-Case read_only "show the installed Node version" @("shell_command") -RequiredCommandRegexes @('(?i)\bnode\s+(--version|-v)\b')
+Add-Case read_only "count files in this directory" @("shell_command") -RequiredCommandRegexes @('(?i)(Measure-Object|wc\s+-l)')
+Add-Case read_only "search recursively for the word TODO" @("shell_command") -RequiredCommandRegexes @('TODO', '(?i)(Select-String|rg\s|grep\s)', '(?i)(-Recurse\b|-r\b|--recursive\b)')
+Add-Case read_only "show disk free space" @("shell_command") -RequiredCommandRegexes @('(?i)(Get-PSDrive|Get-Volume|Win32_LogicalDisk|df\s)')
+Add-Case read_only "list child directories only" @("shell_command") -RequiredCommandRegexes @('(?i)(-Directory\b|DirectoryInfo|find\s+.*-type\s+d)')
+Add-Case read_only "show the size of Cargo.toml" @("shell_command", "fallback") -RequiredCommandRegexes @('(?i)Cargo\.toml', '(?i)(Length|Measure-Object|Get-Item|stat\s|du\s)')
+Add-Case read_only "test whether package.json exists" @("shell_command") -RequiredCommandRegexes @('(?i)package\.json', '(?i)(Test-Path|test\s+-[ef]|Path\.Exists)')
+Add-Case read_only "show listening TCP ports" @("shell_command") -RequiredCommandRegexes @('(?i)(Get-NetTCPConnection|netstat|lsof|ss\s)', '(?i)(Listen|LISTEN|-l)')
+Add-Case read_only "display the PATH without changing it" @("shell_command", "fallback") -RequiredCommandRegexes @('(?i)(\$env:PATH|\$PATH|printenv\s+PATH)')
+Add-Case read_only "find files modified today" @("shell_command") -RequiredCommandRegexes @('(?i)(LastWriteTime|mtime|newermt)')
+Add-Case read_only "show the current PowerShell version" @("shell_command") -RequiredCommandRegexes @('(?i)(PSVersionTable|pwsh\s+--version|powershell(?:\.exe)?\s+.*version)')
+Add-Case read_only "list Git branches" @("shell_command") -RequiredCommandRegexes @('(?i)\bgit\s+branch\b')
+Add-Case read_only "show Cargo workspace metadata without building" @("shell_command") -RequiredCommandRegexes @('(?i)\bcargo\s+metadata\b')
 
 # 15 state-changing requests. Every generated command must require approval.
 Add-Case mutation "create a folder named archive-$suffix" @("approval_required")
@@ -180,8 +231,48 @@ Add-Case recovery "git push" @("approval_required", "fallback") "recovery" 128 "
 Add-Case recovery "npm test" @("shell_command", "fallback") "recovery" 1 "Missing script: test"
 Add-Case recovery "Get-NetTCPConnection -LocalPort 99999" @("fallback") "recovery" 1 "No matching objects found"
 
-if ($cases.Count -ne 95) {
-    throw "Acceptance suite must contain 95 cases; found $($cases.Count)."
+$folderSizeContext = @{
+    session_commands = @(
+        @{
+            intent = "find the 10 largest folders and sub folders up to 3 levels in this folder"
+            command = "Get-ChildItem -Directory -Recurse -Depth 3 | Select-Object -First 10"
+            status = "success"
+            reason = "Generated command validated by the host."
+        }
+    )
+    session_turns = @(
+        @{
+            request = "find the 10 largest folders and sub folders up to 3 levels in this folder"
+            outcome = "listed the ten largest directories with their sizes"
+        }
+    )
+} | ConvertTo-Json -Compress -Depth 5
+$websiteContext = @{
+    session_turns = @(
+        @{
+            request = "run this React website"
+            outcome = "Which existing directory contains the website?"
+        }
+    )
+} | ConvertTo-Json -Compress -Depth 5
+$searchContext = @{
+    session_turns = @(
+        @{
+            request = "where is the folder named $simple under this directory"
+            outcome = "Should subdirectories be included in the search?"
+        }
+    )
+} | ConvertTo-Json -Compress -Depth 5
+
+# Multi-turn cases prove that short refinements use bounded session context.
+Add-Case follow_up "i need the sizes in gb" @("shell_command", "approval_required") -RequiredCommandRegexes @('(?i)(SizeGB|/1GB|/ 1GB|gib|du\s+-[^ ]*h)') -ContextJson $folderSizeContext
+Add-Case follow_up "only show the top five" @("shell_command", "approval_required") -RequiredCommandRegexes @('(?i)(-First\s+5\b|head\s+-n\s+5\b)') -ContextJson $folderSizeContext
+Add-Case follow_up "run this website" @("approval_required") -RequiredCommandRegexes @('(?i)(npm\s+run\s+dev|npm\s+start|pnpm\s+(?:run\s+)?dev|yarn\s+dev)') -ContextJson $websiteContext
+Add-Case follow_up "use the current folder" @("approval_required") -RequiredCommandRegexes @('(?i)(npm\s+run\s+dev|npm\s+start|pnpm\s+(?:run\s+)?dev|yarn\s+dev)') -ContextJson $websiteContext
+Add-Case follow_up "include all subdirectories" @("shell_command") -RequiredCommandRegexes @('(?i)(-Recurse\b|(?:^|\s)find\s)', [regex]::Escape($simple)) -ContextJson $searchContext
+
+if ($cases.Count -ne 100) {
+    throw "Acceptance suite must contain 100 cases; found $($cases.Count)."
 }
 
 if ($ValidateOnly) {
@@ -199,6 +290,7 @@ if ($MaxCases -gt 0) {
 $binaryPath = (Resolve-Path -LiteralPath $Binary).Path
 $modelsPath = (Resolve-Path -LiteralPath $ModelsDirectory).Path
 $outputFullPath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputPath))
+$contextFilePath = Join-Path $fixtureRoot ".aish-context.json"
 $models = Get-ChildItem -LiteralPath $modelsPath -File -Filter $ModelPattern | Sort-Object Name
 if ($models.Count -eq 0) {
     throw "No GGUF models matched '$ModelPattern' in $modelsPath."
@@ -223,6 +315,14 @@ try {
                 @("--recover-json", $nativePrompt, "--exit-code", [string]$case.exit_code, "--stderr", $case.stderr, "--model", $modelId, "--diagnostics")
             } else {
                 @("--plan-json", $nativePrompt, "--model", $modelId, "--diagnostics")
+            }
+            if (-not [string]::IsNullOrWhiteSpace($case.context_json)) {
+                [System.IO.File]::WriteAllText(
+                    $contextFilePath,
+                    $case.context_json,
+                    [System.Text.UTF8Encoding]::new($false)
+                )
+                $arguments += @("--context-json-file", $contextFilePath)
             }
             $watch = [System.Diagnostics.Stopwatch]::StartNew()
             $previousErrorActionPreference = $ErrorActionPreference
@@ -263,6 +363,30 @@ try {
                     $failure = "Command omitted required semantics: $($missingCommandPatterns -join ', ')."
                 }
             }
+            $missingCommandRegexes = @()
+            if ($expected -and $case.required_command_regexes.Count -gt 0 -and $action -ne "fallback") {
+                $command = if ($null -ne $plan) { [string]$plan.command } else { "" }
+                $missingCommandRegexes = @($case.required_command_regexes | Where-Object {
+                    -not [regex]::IsMatch($command, [string]$_)
+                })
+                if ($missingCommandRegexes.Count -gt 0) {
+                    $expected = $false
+                    $failure = "Command failed semantic checks: $($missingCommandRegexes -join ', ')."
+                }
+            }
+            $commandQualityFailures = @()
+            if (
+                $expected -and
+                $null -ne $plan -and
+                -not [string]::IsNullOrWhiteSpace([string]$plan.command) -and
+                $action -in @("shell_command", "approval_required")
+            ) {
+                $commandQualityFailures = @(Get-CommandQualityFailures ([string]$plan.command) $case.category)
+                if ($commandQualityFailures.Count -gt 0) {
+                    $expected = $false
+                    $failure = $commandQualityFailures -join " | "
+                }
+            }
             if (-not $expected -and [string]::IsNullOrWhiteSpace($failure)) {
                 $failure = "Expected action $($case.expected_actions -join ' or '), received $action."
             }
@@ -300,6 +424,7 @@ try {
                 process_exit_code = $processExit
                 expected_action = $expected
                 expected_actions = @($case.expected_actions)
+                command_quality_failures = @($commandQualityFailures)
                 failure_reason = $failure
                 failure_diagnostics = $failureDiagnostics
             })
@@ -337,9 +462,9 @@ $summaries = foreach ($model in $models) {
 }
 
 $report = [pscustomobject]@{
-    schema = "aish.real-model-acceptance.v1"
+    schema = "aish.real-model-acceptance.v2"
     generated_at_utc = [DateTime]::UtcNow.ToString("o")
-    execution_policy = "plans_only_no_generated_commands_executed"
+    execution_policy = "plans_only_with_shell_syntax_availability_and_semantic_command_validation"
     fixture_paths_redacted = $true
     full_suite = $SkipCases -le 0 -and $MaxCases -le 0
     evaluated_cases_per_model = $cases.Count
@@ -351,6 +476,7 @@ $report = [pscustomobject]@{
         ambiguous = @($cases | Where-Object { $_.category -eq "ambiguous" }).Count
         explanation = @($cases | Where-Object { $_.category -eq "explanation" }).Count
         recovery = @($cases | Where-Object { $_.category -eq "recovery" }).Count
+        follow_up = @($cases | Where-Object { $_.category -eq "follow_up" }).Count
     }
     summaries = @($summaries)
     results = @($results)

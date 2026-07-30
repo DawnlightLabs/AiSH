@@ -101,6 +101,16 @@ pub struct ModelRunRequest {
     pub profile: ModelProfile,
     pub system_prompt: String,
     pub prompt: String,
+    #[serde(default)]
+    pub grammar_override: Option<String>,
+}
+
+pub fn semantic_plan_grammar_for(kind: SemanticPlanKind) -> String {
+    structured_output::semantic_plan_grammar_for(kind)
+}
+
+pub fn failed_command_recovery_grammar() -> String {
+    structured_output::failed_command_recovery_grammar()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,7 +327,7 @@ fn contains_powershell_wildcard_variable(command: &str) -> bool {
 }
 
 pub fn build_semantic_plan_system_prompt() -> String {
-    "You are AiSH's intent planner. Return exactly one compact JSON semantic plan. Allowed kinds: change_directory uses target and optional scope; filesystem_action uses operation, the user's target reference, optional destination, and optional scope; shell_command uses payload for non-filesystem shell work; answer uses message; clarification uses message only when required information is missing. Filesystem operations are create_file, create_directory, delete, rename, move, and copy. Preserve user-provided names exactly and never convert spaces, hyphens, underscores, case, or Unicode. Do not invent or complete filesystem paths; the host resolves existing targets and known folders. A shell_command payload may contain two to four ordered commands separated by semicolons only when the objective genuinely requires multiple steps; the host executes them separately and stops on failure. Use recent session turns to resolve concise follow-ups when the referenced target or choice is unambiguous. For navigation, return the user's target rather than cd or Set-Location. Explanatory questions asking why, how, what, or for an explanation must return an answer and must not run a command merely to explain a general cause or concept. Only explicit requests to display, list, find, check, or inspect current machine, filesystem, process, environment, repository, or project state should return a shell_command that observes that state; never invent observed state as an answer. Do not add risk, shell, status, reasoning, Markdown, placeholders, or extra text. Never invent paths, files, tools, or facts. The host resolves paths, validates commands, classifies risk, and handles approval.".to_string()
+    "You are AiSH's intent planner. Return exactly one compact JSON semantic plan. Allowed kinds: change_directory uses target and optional scope; filesystem_action uses operation, the user's target reference, optional destination, optional content, and optional scope; shell_command uses payload for non-filesystem shell work; answer uses message; clarification uses message only when required information is missing. Filesystem operations are create_file, create_directory, delete, rename, move, copy, write_file, and append_file. For write_file and append_file, return target plus content and never render shell redirection. Preserve user-provided names and content exactly and never convert spaces, hyphens, underscores, case, or Unicode. Do not invent or complete filesystem paths; the host resolves existing targets and known folders. A shell_command payload may contain two to four ordered commands separated by semicolons only when the objective genuinely requires multiple steps; the host executes them separately and stops on failure. Use recent session turns to resolve concise follow-ups when the referenced target or choice is unambiguous. For navigation, return the user's target rather than cd or Set-Location. Explanatory questions asking why, how, what, or for an explanation must return an answer and must not run a command merely to explain a general cause or concept. Only explicit requests to display, list, find, check, or inspect current machine, filesystem, process, environment, repository, or project state should return a shell_command that observes that state; never invent observed state as an answer. Do not add risk, shell, status, reasoning, Markdown, placeholders, or extra text. Never invent paths, files, tools, or facts. The host resolves paths, validates commands, classifies risk, and handles approval.".to_string()
 }
 
 pub fn build_semantic_plan_prompt(intent: &str, context_json: &serde_json::Value) -> String {
@@ -485,7 +495,12 @@ pub fn run_gguf_model(request: ModelRunRequest) -> Result<ModelRunResult, String
             command.arg("--json-schema").arg(SEMANTIC_PLAN_JSON_SCHEMA);
         }
         StructuredOutputMode::Grammar => {
-            command.arg("--grammar").arg(SEMANTIC_PLAN_GBNF);
+            command.arg("--grammar").arg(
+                request
+                    .grammar_override
+                    .as_deref()
+                    .unwrap_or(SEMANTIC_PLAN_GBNF),
+            );
         }
     }
 
