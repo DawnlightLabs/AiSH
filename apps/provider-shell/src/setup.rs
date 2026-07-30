@@ -6,7 +6,8 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DEFAULT_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf?download=true";
+const DEFAULT_MODEL_FILENAME: &str = "Qwen2.5-Coder-1.5B-Instruct-Q6_K.gguf";
+const DEFAULT_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q6_K.gguf?download=true";
 
 pub fn handle_setup_args() {
     let args = env::args().collect::<Vec<_>>();
@@ -718,11 +719,9 @@ fn default_model_path() -> PathBuf {
     if let Ok(path) = env::var("AISH_MODEL_PATH") {
         return PathBuf::from(path);
     }
-    home_dir()
-        .join("Downloads")
-        .join("aish-model")
+    aish_logging::app_data_dir()
         .join("models")
-        .join("Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf")
+        .join(DEFAULT_MODEL_FILENAME)
 }
 
 fn home_dir() -> PathBuf {

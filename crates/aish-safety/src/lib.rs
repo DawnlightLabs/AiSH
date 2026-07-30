@@ -224,6 +224,7 @@ pub fn classify_risk(command: &str) -> RiskDecision {
     ];
     let read_only_exact = [
         "git branch",
+        "$psversiontable.psversion",
         "powershell -command \"$psversiontable.psversion\"",
         "powershell.exe -command \"$psversiontable.psversion\"",
     ];
@@ -491,6 +492,7 @@ mod tests {
             "Set-Location C:\\Users",
             "Get-ChildItem -Path D:\\ -Recurse -Filter foo",
             "Get-ChildItem -File | Where-Object { $_.Length -gt 10MB }",
+            "$PSVersionTable.PSVersion",
             "netstat -ano | findstr :3000",
             "rustc --version",
             "Get-PSDrive -PSProvider FileSystem | Select-Object Name,Free",

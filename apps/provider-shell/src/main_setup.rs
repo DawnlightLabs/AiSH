@@ -482,7 +482,7 @@ fn handle_headless_plan(state: &ProviderState) -> bool {
     }
     let index = plan_index.or(recovery_index).expect("headless mode index");
     let Some(intent) = args.get(index + 1).filter(|value| !value.trim().is_empty()) else {
-        eprintln!("usage: aish --plan-json <intent> | --recover-json <command> [--exit-code <code>] [--stderr <text>] [--model <id>] [--diagnostics]");
+        eprintln!("usage: aish --plan-json <intent> | --recover-json <command> [--exit-code <code>] [--stderr <text>] [--context-json <object> | --context-json-file <path>] [--model <id>] [--diagnostics]");
         std::process::exit(2);
     };
     let selected_model = cli_arg_value(&args, "--model");
@@ -501,7 +501,43 @@ fn handle_headless_plan(state: &ProviderState) -> bool {
         profile.label, profile.timeout_seconds
     );
     let diagnostics = args.iter().any(|arg| arg == "--diagnostics");
-    let context = provider_context(state);
+    let mut context = provider_context(state);
+    let inline_context = cli_arg_value(&args, "--context-json");
+    let context_file = cli_arg_value(&args, "--context-json-file");
+    if inline_context.is_some() && context_file.is_some() {
+        eprintln!("use either --context-json or --context-json-file, not both");
+        std::process::exit(2);
+    }
+    let context_source = if let Some(path) = context_file {
+        match std::fs::read_to_string(path) {
+            Ok(content) => Some(content),
+            Err(error) => {
+                eprintln!("failed to read --context-json-file: {error}");
+                std::process::exit(2);
+            }
+        }
+    } else {
+        inline_context.map(str::to_string)
+    };
+    if let Some(raw_context) = context_source {
+        let raw_context = raw_context.trim_start_matches('\u{feff}');
+        let overlay = match serde_json::from_str::<serde_json::Value>(raw_context) {
+            Ok(serde_json::Value::Object(object)) => object,
+            Ok(_) => {
+                eprintln!("--context-json must contain a JSON object");
+                std::process::exit(2);
+            }
+            Err(error) => {
+                eprintln!("invalid --context-json value: {error}");
+                std::process::exit(2);
+            }
+        };
+        let Some(context_object) = context.as_object_mut() else {
+            eprintln!("planner context is not a JSON object");
+            std::process::exit(2);
+        };
+        context_object.extend(overlay);
+    }
     let plan = if recovery_index.is_some() {
         let exit_code = cli_arg_value(&args, "--exit-code").and_then(|value| value.parse().ok());
         let stderr = cli_arg_value(&args, "--stderr").unwrap_or_default();

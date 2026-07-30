@@ -6,6 +6,9 @@ const MAX_VISITED_ENTRIES: usize = 4096;
 const MAX_RECURSION_DEPTH: usize = 5;
 
 pub(crate) fn ground_filesystem_mutation(plan: &mut SemanticPlan, request: &str, context: &Value) {
+    if ground_multiple_named_creations(plan, request, context) {
+        return;
+    }
     if plan.kind == SemanticPlanKind::FilesystemAction {
         if filesystem_operation_matches_request(plan.operation.as_ref(), request) {
             ground_typed_filesystem_action(plan, request, context);
@@ -15,6 +18,102 @@ pub(crate) fn ground_filesystem_mutation(plan: &mut SemanticPlan, request: &str,
     } else if is_singular_deletion(request) {
         ground_singular_deletion(plan, request, context);
     }
+}
+
+fn ground_multiple_named_creations(
+    plan: &mut SemanticPlan,
+    request: &str,
+    context: &Value,
+) -> bool {
+    let clauses = ordered_request_clauses(request);
+    if clauses.len() < 2
+        || clauses.len() > 4
+        || clauses.iter().any(|clause| !is_named_creation(clause))
+    {
+        return false;
+    }
+    let Some(base_scope) = request_scope("", context) else {
+        return false;
+    };
+    let mut previous_target: Option<PathBuf> = None;
+    let mut commands = Vec::new();
+    for clause in clauses {
+        let Some(name) = requested_new_name(clause) else {
+            clarification(
+                plan,
+                "Please provide one valid name for each new item.".to_string(),
+            );
+            return true;
+        };
+        if !valid_single_name(&name) {
+            clarification(
+                plan,
+                "Please provide one valid name for each new item.".to_string(),
+            );
+            return true;
+        }
+        let lower = clause.to_ascii_lowercase();
+        let relative_to_previous = lower.contains(" inside it")
+            || lower.contains(" in it")
+            || lower.contains(" under it")
+            || lower.contains(" within it");
+        let scope = if relative_to_previous {
+            let Some(previous) = previous_target.as_ref() else {
+                clarification(
+                    plan,
+                    "Which previously created folder should contain the next item?".to_string(),
+                );
+                return true;
+            };
+            previous.clone()
+        } else {
+            known_folder_scope(clause, context).unwrap_or_else(|| base_scope.clone())
+        };
+        let target = scope.join(name);
+        if target.exists() {
+            clarification(
+                plan,
+                format!("An item named '{}' already exists.", target.display()),
+            );
+            return true;
+        }
+        let kind = expected_entry_kind(clause);
+        commands.push(create_command(&target, kind));
+        commands.push(verify_exists_command(&target));
+        previous_target = Some(target);
+    }
+    complete_with_command(plan, commands.join("; "));
+    true
+}
+
+fn ordered_request_clauses(request: &str) -> Vec<&str> {
+    let lower = request.to_ascii_lowercase();
+    let mut clauses = Vec::new();
+    let mut cursor = 0;
+    while cursor < request.len() {
+        let remainder = &lower[cursor..];
+        let next = [" and then ", " then "]
+            .into_iter()
+            .filter_map(|separator| {
+                remainder
+                    .find(separator)
+                    .map(|offset| (cursor + offset, separator.len()))
+            })
+            .min_by_key(|(index, _)| *index);
+        let Some((index, separator_length)) = next else {
+            break;
+        };
+        let clause = request[cursor..index].trim();
+        if !clause.is_empty() {
+            clauses.push(clause);
+        }
+        cursor = index + separator_length;
+    }
+    let final_clause = request[cursor..].trim();
+    if !final_clause.is_empty() {
+        clauses.push(final_clause);
+    }
+    clauses
 }
 
 pub(crate) fn filesystem_operation_matches_request(
@@ -40,6 +139,8 @@ pub(crate) fn filesystem_operation_matches_request(
                     && !contains(&["file"]))
         }
         Some(FilesystemOperation::Copy) => contains(&["copy", "duplicate"]),
+        Some(FilesystemOperation::WriteFile) => contains(&["write", "overwrite", "replace"]),
+        Some(FilesystemOperation::AppendFile) => contains(&["append", "add"]),
         None => false,
     }
 }
@@ -128,7 +229,9 @@ fn ground_typed_filesystem_action(plan: &mut SemanticPlan, request: &str, contex
             }
         }
         FilesystemOperation::Rename => {
-            let Some(source) = resolve_unique_source(plan, &scope, request, request) else {
+            let source_reference = requested_source_reference(request).unwrap_or(&target_reference);
+            let Some(source) = resolve_unique_source(plan, &scope, source_reference, request)
+            else {
                 return;
             };
             let Some(destination) = requested_destination_name(request, context)
@@ -154,7 +257,9 @@ fn ground_typed_filesystem_action(plan: &mut SemanticPlan, request: &str, contex
             );
         }
         FilesystemOperation::Move | FilesystemOperation::Copy => {
-            let Some(source) = resolve_unique_source(plan, &scope, request, request) else {
+            let source_reference = requested_source_reference(request).unwrap_or(&target_reference);
+            let Some(source) = resolve_unique_source(plan, &scope, source_reference, request)
+            else {
                 return;
             };
             let Some(destination_reference) = plan.destination.clone() else {
@@ -185,6 +290,37 @@ fn ground_typed_filesystem_action(plan: &mut SemanticPlan, request: &str, contex
                 verify_exists_command(&final_destination)
             };
             complete_with_verified_command(plan, command, verification);
+        }
+        FilesystemOperation::WriteFile | FilesystemOperation::AppendFile => {
+            let target_name = requested_write_target(request)
+                .or_else(|| reference_name(&target_reference))
+                .unwrap_or(target_reference);
+            if !valid_single_name(&target_name) {
+                clarification(plan, "Please provide one valid file name.".to_string());
+                return;
+            }
+            let Some(content) = requested_write_content(request).or_else(|| plan.payload.clone())
+            else {
+                clarification(plan, "What content should I write?".to_string());
+                return;
+            };
+            let target = scope.join(target_name);
+            if target.is_dir() {
+                clarification(
+                    plan,
+                    "The requested target is a directory, not a file.".to_string(),
+                );
+                return;
+            }
+            complete_with_verified_command(
+                plan,
+                write_file_command(
+                    &target,
+                    &content,
+                    operation == FilesystemOperation::AppendFile,
+                ),
+                verify_exists_command(&target),
+            );
         }
     }
 }
@@ -268,18 +404,76 @@ fn requested_destination_name(request: &str, context: &Value) -> Option<String> 
     (!name.is_empty()).then(|| name.to_string())
 }
 
+fn requested_source_reference(request: &str) -> Option<&str> {
+    let trimmed = request.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let start = ["rename ", "move ", "copy ", "duplicate "]
+        .into_iter()
+        .find_map(|prefix| lower.starts_with(prefix).then_some(prefix.len()))?;
+    let remainder = &trimmed[start..];
+    let lower_remainder = remainder.to_ascii_lowercase();
+    let end = [
+        " into ", " to ", " from ", " in ", " on ", " under ", " inside ",
+    ]
+    .into_iter()
+    .filter_map(|separator| lower_remainder.find(separator))
+    .min()
+    .unwrap_or(remainder.len());
+    let reference = remainder[..end].trim().trim_matches(['\'', '"', ',', ';']);
+    (!reference.is_empty()).then_some(reference)
+}
+
+fn requested_write_parts(request: &str) -> Option<(&str, &str)> {
+    let trimmed = request.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let start = ["write ", "append ", "overwrite "]
+        .into_iter()
+        .find_map(|prefix| lower.starts_with(prefix).then_some(prefix.len()))?;
+    let remainder = &trimmed[start..];
+    let lower_remainder = remainder.to_ascii_lowercase();
+    let separator = [" into ", " to "]
+        .into_iter()
+        .filter_map(|separator| {
+            lower_remainder
+                .rfind(separator)
+                .map(|index| (index, separator.len()))
+        })
+        .max_by_key(|(index, _)| *index)?;
+    let content = remainder[..separator.0].trim().trim_matches(['\'', '"']);
+    let target = remainder[separator.0 + separator.1..]
+        .trim()
+        .trim_matches(['\'', '"', '.', ',', ';']);
+    (!content.is_empty() && !target.is_empty()).then_some((content, target))
+}
+
+fn requested_write_content(request: &str) -> Option<String> {
+    requested_write_parts(request).map(|(content, _)| content.to_string())
+}
+
+fn requested_write_target(request: &str) -> Option<String> {
+    requested_write_parts(request).map(|(_, target)| target.to_string())
+}
+
 fn resolve_unique_source(
     plan: &mut SemanticPlan,
     scope: &Path,
     reference: &str,
     request: &str,
 ) -> Option<PathBuf> {
-    let matches = matching_entries(
+    let mut matches = matching_entries(
         scope,
         reference,
         EntryKind::Either,
         requests_recursive_search(request),
     );
+    if matches.is_empty() && normalized_match_key(reference) != normalized_match_key(request) {
+        matches = matching_entries(
+            scope,
+            request,
+            EntryKind::Either,
+            requests_recursive_search(request),
+        );
+    }
     match matches.as_slice() {
         [source] => Some(source.clone()),
         [] => {
@@ -324,6 +518,9 @@ fn resolve_destination(
     };
     if rooted.is_dir() {
         return Some(rooted);
+    }
+    if rooted.exists() {
+        return None;
     }
     if !rooted.exists()
         && rooted
@@ -638,7 +835,9 @@ fn collect_matches(
                 .file_stem()
                 .map(|stem| normalized_match_key(&stem.to_string_lossy()))
                 .unwrap_or_default();
-            let score = if !name_key.is_empty() && request_key.contains(&name_key) {
+            let score = if !name_key.is_empty() && request_key == name_key {
+                4
+            } else if !name_key.is_empty() && request_key.contains(&name_key) {
                 3
             } else if stem_key.len() >= 3 && request_key.contains(&stem_key) {
                 2
@@ -730,6 +929,26 @@ fn create_command(target: &Path, kind: EntryKind) -> String {
         "Directory"
     };
     format!("New-Item -ItemType {item_type} -Path {}", quote(target))
+}
+
+#[cfg(windows)]
+fn write_file_command(target: &Path, content: &str, append: bool) -> String {
+    let command = if append { "Add-Content" } else { "Set-Content" };
+    format!(
+        "{command} -LiteralPath {} -Value '{}'",
+        quote(target),
+        content.replace('\'', "''")
+    )
+}
+
+#[cfg(not(windows))]
+fn write_file_command(target: &Path, content: &str, append: bool) -> String {
+    let redirect = if append { ">>" } else { ">" };
+    format!(
+        "printf '%s\\n' '{}' {redirect} {}",
+        content.replace('\'', "'\"'\"'"),
+        quote(target)
+    )
 }
 
 #[cfg(not(windows))]
@@ -925,7 +1144,11 @@ mod tests {
             &context,
         );
 
-        assert_eq!(value.kind, SemanticPlanKind::Clarification);
+        assert_eq!(
+            value.kind,
+            SemanticPlanKind::Clarification,
+            "unexpected grounded plan: {value:?}"
+        );
         assert!(value.payload.is_none());
         assert!(value.message.unwrap().contains("multiple"));
         fs::remove_dir_all(root).expect("cleanup");
@@ -945,6 +1168,27 @@ mod tests {
         assert_eq!(value.kind, SemanticPlanKind::Clarification);
         assert!(value.payload.is_none());
         assert!(value.message.unwrap().contains("could not find"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn typed_deletion_ignores_an_invented_model_path() {
+        let (root, context) = fixture();
+        let actual = root.join("Disposable 8427.tmp");
+        fs::write(&actual, b"fixture").expect("file");
+        let mut value = filesystem_plan(
+            FilesystemOperation::Delete,
+            r"C:\invented\OneDrive\Temp\aish-dynamic-8427.tmp",
+            None,
+            Some("current directory"),
+        );
+
+        ground_filesystem_mutation(&mut value, "delete Disposable 8427.tmp", &context);
+
+        assert_eq!(value.kind, SemanticPlanKind::ShellCommand);
+        let command = value.payload.expect("grounded command");
+        assert!(command.contains(&actual.to_string_lossy().to_string()));
+        assert!(!command.contains("invented"));
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -1110,6 +1354,34 @@ mod tests {
     }
 
     #[test]
+    fn typed_move_distinguishes_the_source_from_a_named_destination() {
+        let (root, context) = fixture();
+        let source = root.join("Move Source 8427.txt");
+        let destination = root.join("Orbit-8427");
+        fs::write(&source, b"fixture").expect("file");
+        fs::write(root.join("source-8427.txt"), b"decoy").expect("decoy");
+        fs::create_dir(&destination).expect("destination");
+        let mut value = filesystem_plan(
+            FilesystemOperation::Move,
+            "source-8427.txt",
+            Some("Orbit-8427"),
+            Some("current directory"),
+        );
+
+        ground_filesystem_mutation(
+            &mut value,
+            "move Move Source 8427.txt into Orbit-8427",
+            &context,
+        );
+
+        assert_eq!(value.kind, SemanticPlanKind::ShellCommand);
+        let command = value.payload.expect("grounded command");
+        assert!(command.contains(&source.to_string_lossy().to_string()));
+        assert!(command.contains(&destination.to_string_lossy().to_string()));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn typed_copy_preserves_the_existing_source_and_destination() {
         let (root, context) = fixture();
         let downloads = PathBuf::from(context["known_folders"]["downloads"].as_str().unwrap());
@@ -1186,7 +1458,11 @@ mod tests {
             &context,
         );
 
-        assert_eq!(value.kind, SemanticPlanKind::Clarification);
+        assert_eq!(
+            value.kind,
+            SemanticPlanKind::Clarification,
+            "unexpected grounded plan: {value:?}"
+        );
         assert!(value.payload.is_none());
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -1217,6 +1493,65 @@ mod tests {
         assert!(steps[1].contains("verify-source.txt"));
         assert!(steps[1].contains("Verified Destination.txt"));
         assert!(steps[1].contains("AiSH verified the requested filesystem change."));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn typed_write_preserves_content_and_quotes_the_requested_file_name() {
+        let (root, context) = fixture();
+        let mut value = SemanticPlan {
+            kind: SemanticPlanKind::FilesystemAction,
+            payload: Some("model changed this".to_string()),
+            target: Some("Result_File.txt".to_string()),
+            scope: Some("current directory".to_string()),
+            message: None,
+            operation: Some(FilesystemOperation::WriteFile),
+            destination: None,
+        };
+
+        ground_filesystem_mutation(
+            &mut value,
+            "write hello dynamic sandbox into Result File.txt",
+            &context,
+        );
+
+        assert_eq!(value.kind, SemanticPlanKind::ShellCommand);
+        let command = value.payload.expect("grounded command");
+        assert!(command.contains("Result File.txt"));
+        assert!(command.contains("hello dynamic sandbox"));
+        assert!(!command.contains("Result_File.txt"));
+        assert!(!command.contains("model changed this"));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn multiple_named_creations_become_ordered_verified_steps() {
+        let (root, context) = fixture();
+        let mut value = filesystem_plan(
+            FilesystemOperation::CreateDirectory,
+            "Batch 8427",
+            None,
+            Some("current directory"),
+        );
+
+        ground_filesystem_mutation(
+            &mut value,
+            "create a folder named Batch 8427 and then create an empty file named Created Together 8427.txt inside it",
+            &context,
+        );
+
+        assert_eq!(value.kind, SemanticPlanKind::ShellCommand);
+        let command = value.payload.expect("grounded command");
+        let folder = root.join("Batch 8427");
+        let file = folder.join("Created Together 8427.txt");
+        assert!(command.contains(&folder.to_string_lossy().to_string()));
+        assert!(command.contains(&file.to_string_lossy().to_string()));
+        assert_eq!(
+            command
+                .matches("AiSH verified the requested filesystem change.")
+                .count(),
+            2
+        );
         fs::remove_dir_all(root).expect("cleanup");
     }
 
