@@ -4344,7 +4344,13 @@ mod planner_tests {
 
         assert_eq!(plan.action, ProviderPlanAction::ApprovalRequired);
         assert_eq!(plan.risk, RiskLevel::High);
-        assert!(plan.command.as_deref().unwrap().contains("-Recurse"));
+        let command = plan.command.as_deref().unwrap();
+        assert!(command.contains("Disposable Folder 8427"));
+        if cfg!(windows) {
+            assert!(command.contains("-Recurse"));
+        } else {
+            assert!(command.contains("rm -rf"));
+        }
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -4613,9 +4619,16 @@ mod planner_tests {
         } else {
             "ss -l"
         };
+        let large_files_marker = if cfg!(windows) {
+            "length"
+        } else if cfg!(target_os = "macos") {
+            "stat -f"
+        } else {
+            "-printf"
+        };
         let cases = [
             ("show hidden files here", hidden_marker),
-            ("find large files in this project", "length"),
+            ("find large files in this project", large_files_marker),
             ("search recursively for the word TODO", "todo"),
             ("test whether package.json exists", "package.json"),
             ("show listening TCP ports", listening_marker),
