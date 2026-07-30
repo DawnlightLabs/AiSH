@@ -1744,7 +1744,7 @@ fn validate_observation_constraints(input: &str, command: &str) -> Result<(), St
     let requests_large_files =
         has_words(&["large", "largest", "big", "biggest"]) && has_words(&["file", "files"]);
     if requests_large_files
-        && !["length", "size", "du "]
+        && !["length", "size", "du ", "-printf '%s", "stat -f '%z"]
             .iter()
             .any(|marker| lower.contains(marker))
     {
@@ -3756,6 +3756,18 @@ mod planner_tests {
             "find . -maxdepth 3 -type d -exec du -sk {} + | sort -nr | head -n 10"
         };
         assert_eq!(validate_observation_constraints(input, command), Ok(()));
+    }
+
+    #[test]
+    fn observation_validation_accepts_linux_and_macos_large_file_sizes() {
+        let input = "find large files in this project";
+        let commands = [
+            "find . -type f -printf '%s %p\\n' 2>/dev/null | sort -nr | head -n 20",
+            "find . -type f -exec stat -f '%z %N' {} + 2>/dev/null | sort -nr | head -n 20",
+        ];
+        for command in commands {
+            assert_eq!(validate_observation_constraints(input, command), Ok(()));
+        }
     }
 
     #[test]
