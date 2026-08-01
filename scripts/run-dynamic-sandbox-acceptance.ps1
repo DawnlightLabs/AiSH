@@ -44,6 +44,7 @@ function Add-DynamicCase {
         [string[]]$MissingPaths = @(),
         [int[]]$ExpectedExitCodes = @(0),
         [string]$ContextJson = "",
+        [string]$WorkingDirectory = "",
         [Nullable[int]]$RecoveryExitCode = $null,
         [string]$RecoveryStderr = ""
     )
@@ -60,6 +61,7 @@ function Add-DynamicCase {
         missing_paths = $MissingPaths
         expected_exit_codes = $ExpectedExitCodes
         context_json = $ContextJson
+        working_directory = $WorkingDirectory
         recovery_exit_code = $RecoveryExitCode
         recovery_stderr = $RecoveryStderr
     })
@@ -287,6 +289,15 @@ Add-DynamicCase follow_up "i need the sizes in gb" @("shell_command", "approval_
 Add-DynamicCase follow_up "only show the top five" @("shell_command", "approval_required") -AllowedCommandRegex '(-First\s+5|head\s+-n\s+5)' -ContextJson $folderSizeContext
 Add-DynamicCase follow_up "run this website" @("approval_required") -AllowedCommandRegex '(npm\s+run\s+dev|pnpm\s+run\s+dev|yarn\s+dev|bun\s+run\s+dev)' -ContextJson $websiteContext
 Add-DynamicCase follow_up "use the current folder" @("approval_required") -AllowedCommandRegex '(npm\s+run\s+dev|pnpm\s+run\s+dev|yarn\s+dev|bun\s+run\s+dev)' -ContextJson $websiteContext
+Add-DynamicCase project_run "run this website please" @("approval_required") -AllowedCommandRegex '(npm\s+install.*npm\s+run\s+dev|pnpm\s+install.*pnpm\s+run\s+dev|yarn\s+install.*yarn\s+dev|bun\s+install.*bun\s+run\s+dev)'
+Add-DynamicCase project_run "run this application" @("shell_command", "approval_required") -AllowedCommandRegex 'cargo\s+run' -WorkingDirectory "runner-rust"
+Add-DynamicCase project_run "start this API" @("shell_command", "approval_required") -AllowedCommandRegex '(python|python3)\s+-m\s+uvicorn\s+app:app' -WorkingDirectory "runner-fastapi"
+Add-DynamicCase project_run "run the current program" @("shell_command", "approval_required") -AllowedCommandRegex 'go\s+run\s+\.' -WorkingDirectory "runner-go"
+Add-DynamicCase project_run "launch this app" @("shell_command", "approval_required") -AllowedCommandRegex 'dotnet\s+run\s+--project.*Fixture\.csproj' -WorkingDirectory "runner-dotnet"
+Add-DynamicCase project_run "execute this program" @("shell_command", "approval_required") -AllowedCommandRegex '((powershell|pwsh).*)?run\.ps1' -WorkingDirectory "runner-script"
+Add-DynamicCase project_run "serve this site" @("shell_command", "approval_required") -AllowedCommandRegex '(python|python3)\s+-m\s+http\.server\s+8000' -WorkingDirectory "runner-static"
+Add-DynamicCase project_run "run this application" @("fallback") -WorkingDirectory "runner-ambiguous"
+Add-DynamicCase project_run "run this application" @("fallback") -WorkingDirectory "runner-unknown"
 Add-DynamicCase follow_up "include all subdirectories" @("shell_command") -AllowedCommandRegex ([regex]::Escape($nested)) -ContextJson $namedSearchContext
 Add-DynamicCase ambiguous "rename this file" @("fallback")
 Add-DynamicCase ambiguous "delete the old one" @("fallback")
@@ -297,8 +308,8 @@ Add-DynamicCase routing "git status" @("literal_command") -Mode route
 Add-DynamicCase routing "git stats" @("literal_command") -Mode route
 Add-DynamicCase routing "pull the latest updates" @("natural_language") -Mode route
 
-if ($cases.Count -ne 42) {
-    throw "Dynamic acceptance suite must contain 42 cases; found $($cases.Count)."
+if ($cases.Count -ne 51) {
+    throw "Dynamic acceptance suite must contain 51 cases; found $($cases.Count)."
 }
 if ($ValidateOnly) {
     Write-Host "Dynamic sandbox suite is valid: $($cases.Count) cases."
@@ -343,6 +354,24 @@ if ($env:OS -eq "Windows_NT") {
 Set-Content -LiteralPath (Join-Path $fixtureRoot "marker-task.ps1") -Value "Write-Output 'DYNAMIC_SCRIPT_OK'" -NoNewline
 Set-Content -LiteralPath (Join-Path $fixtureRoot "args-task.ps1") -Value "param([string]`$First,[string]`$Second); Write-Output `"`$First `$Second`"" -NoNewline
 Set-Content -LiteralPath (Join-Path $fixtureRoot "failing-task.ps1") -Value "Write-Error 'EXPECTED_DYNAMIC_FAILURE'; exit 7" -NoNewline
+New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRoot "runner-rust\src") | Out-Null
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-rust\Cargo.toml") -Value "[package]`nname='fixture'`nversion='0.1.0'" -NoNewline
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-rust\src\main.rs") -Value 'fn main() {}' -NoNewline
+New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRoot "runner-fastapi") | Out-Null
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-fastapi\app.py") -Value "from fastapi import FastAPI`napp = FastAPI()" -NoNewline
+New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRoot "runner-go") | Out-Null
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-go\go.mod") -Value 'module fixture' -NoNewline
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-go\main.go") -Value 'package main; func main() {}' -NoNewline
+New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRoot "runner-dotnet") | Out-Null
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-dotnet\Fixture.csproj") -Value '<Project />' -NoNewline
+New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRoot "runner-script") | Out-Null
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-script\run.ps1") -Value "Write-Output 'RUNNER_OK'" -NoNewline
+New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRoot "runner-static") | Out-Null
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-static\index.html") -Value '<!doctype html>' -NoNewline
+New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRoot "runner-ambiguous") | Out-Null
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-ambiguous\One.csproj") -Value '<Project />' -NoNewline
+Set-Content -LiteralPath (Join-Path $fixtureRoot "runner-ambiguous\Two.csproj") -Value '<Project />' -NoNewline
+New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRoot "runner-unknown") | Out-Null
 
 Push-Location $fixtureRoot
 try {
@@ -357,6 +386,12 @@ try {
         $postconditionFailures = @()
         $previousErrorActionPreference = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
+        $caseWorkingDirectory = if ([string]::IsNullOrWhiteSpace($case.working_directory)) {
+            $fixtureRoot
+        } else {
+            Join-Path $fixtureRoot $case.working_directory
+        }
+        Push-Location $caseWorkingDirectory
         try {
             if ($case.mode -eq "route") {
                 $raw = @(& $binaryPath --route-json $case.prompt 2>&1)
@@ -388,6 +423,7 @@ try {
             }
             $processExit = $LASTEXITCODE
         } finally {
+            Pop-Location
             $ErrorActionPreference = $previousErrorActionPreference
         }
         $watch.Stop()

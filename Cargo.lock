@@ -73,6 +73,7 @@ name = "aish-provider"
 version = "0.1.0"
 dependencies = [
  "aish-ai",
+ "aish-context",
  "aish-core",
  "aish-safety",
  "serde",

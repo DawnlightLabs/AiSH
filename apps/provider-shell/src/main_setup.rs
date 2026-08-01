@@ -33,6 +33,7 @@ struct PendingCommand {
     command: String,
     risk: String,
     reason: String,
+    foreground_process: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -497,7 +498,7 @@ fn handle_headless_plan(state: &ProviderState) -> bool {
         None => state.profile.clone(),
     };
     eprintln!(
-        "AiSH planner: loading {} (timeout: {}s)...",
+        "AiSH planner: preparing request with {} (model timeout: {}s)...",
         profile.label, profile.timeout_seconds
     );
     let diagnostics = args.iter().any(|arg| arg == "--diagnostics");
@@ -601,7 +602,11 @@ fn approve_pending(state: &mut ProviderState) {
             state.theme.warning(&pending.risk)
         );
         println!("{} {}", state.theme.muted("reason:"), pending.reason);
-        let outcome = run_planned_commands(&pending.command);
+        if pending.foreground_process {
+            print_foreground_process_notice(&pending.command, &state.theme);
+        }
+        let outcome =
+            run_planned_commands_with_behavior(&pending.command, pending.foreground_process);
         print_empty_outcome(&outcome, false);
         logging::record_command(
             pending.intent.as_deref(),
@@ -789,6 +794,7 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 command: command.to_string(),
                 risk: risk_label(&plan.risk).to_string(),
                 reason: plan.reason.clone(),
+                foreground_process: plan.foreground_process,
             });
 
             println!(
@@ -830,7 +836,10 @@ fn handle_plan(plan: ProviderPlan, state: &mut ProviderState) {
                 return;
             };
 
-            let outcome = run_planned_commands(command);
+            if plan.foreground_process {
+                print_foreground_process_notice(command, &state.theme);
+            }
+            let outcome = run_planned_commands_with_behavior(command, plan.foreground_process);
             print_empty_outcome(&outcome, true);
             logging::record_command(
                 Some(&plan.intent),
@@ -1102,10 +1111,54 @@ fn run_shell_command(command: &str) -> CommandOutcome {
     }
 }
 
-fn run_planned_commands(command: &str) -> CommandOutcome {
+fn run_foreground_shell_command(command: &str) -> CommandOutcome {
+    if let Some(ok) = handle_cd(command) {
+        return CommandOutcome {
+            success: ok,
+            exit_code: Some(if ok { 0 } else { 1 }),
+            stderr: String::new(),
+            had_output: false,
+        };
+    }
+    let mut process = if env::consts::OS == "windows" {
+        let mut process = Command::new("powershell.exe");
+        process.args(["-NoLogo", "-NoProfile", "-Command", command]);
+        process
+    } else {
+        let mut process = Command::new(shell_path());
+        process.args(["-lc", command]);
+        process
+    };
+    if let Ok(cwd) = env::current_dir() {
+        process.current_dir(child_working_directory(&cwd));
+    }
+    match process.status() {
+        Ok(status) => CommandOutcome {
+            success: status.success(),
+            exit_code: status.code(),
+            stderr: String::new(),
+            had_output: true,
+        },
+        Err(error) => {
+            eprintln!("failed to run command: {error}");
+            CommandOutcome {
+                success: false,
+                exit_code: None,
+                stderr: error.to_string(),
+                had_output: true,
+            }
+        }
+    }
+}
+
+fn run_planned_commands_with_behavior(command: &str, foreground_process: bool) -> CommandOutcome {
     let commands = split_planned_commands(command);
     if commands.len() <= 1 {
-        return run_shell_command(command);
+        return if foreground_process {
+            run_foreground_shell_command(command)
+        } else {
+            run_shell_command(command)
+        };
     }
     println!("AiSH plan: {} steps.", commands.len());
     let mut aggregate = CommandOutcome {
@@ -1116,7 +1169,11 @@ fn run_planned_commands(command: &str) -> CommandOutcome {
     };
     for (index, step) in commands.iter().enumerate() {
         println!("step {}/{}: {step}", index + 1, commands.len());
-        let outcome = run_shell_command(step);
+        let outcome = if foreground_process && index + 1 == commands.len() {
+            run_foreground_shell_command(step)
+        } else {
+            run_shell_command(step)
+        };
         aggregate.had_output |= outcome.had_output;
         if !outcome.stderr.is_empty() {
             if !aggregate.stderr.is_empty() {
@@ -1136,6 +1193,23 @@ fn run_planned_commands(command: &str) -> CommandOutcome {
         }
     }
     aggregate
+}
+
+fn print_foreground_process_notice(command: &str, theme: &Theme) {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let visible = user_facing_path(&cwd);
+    println!("{}", theme.accent("Starting a foreground process."));
+    println!(
+        "{} {}",
+        theme.muted("directory:"),
+        theme.command(visible.display().to_string())
+    );
+    println!("{} {}", theme.muted("command:"), theme.command(command));
+    println!(
+        "{}",
+        theme.warning("This process may keep running. Press Ctrl+C to stop it.")
+    );
+    let _ = io::stdout().flush();
 }
 
 fn print_empty_success(outcome: &CommandOutcome) {
@@ -1318,9 +1392,9 @@ fn unquote(value: &str) -> String {
 mod tests {
     use super::{
         child_working_directory, classify_shell_input_with, cli_arg_value, empty_outcome_message,
-        expand_shell_path, looks_like_command_attempt_with, run_planned_commands,
-        run_shell_command,
-        strip_windows_verbatim_path, ProviderInputMode, ShellInputRoute,
+        expand_shell_path, looks_like_command_attempt_with, run_foreground_shell_command,
+        run_planned_commands_with_behavior, run_shell_command, strip_windows_verbatim_path,
+        ProviderInputMode, ShellInputRoute,
     };
 
     fn test_command_lookup(command: &str) -> bool {
@@ -1448,6 +1522,19 @@ mod tests {
     }
 
     #[test]
+    fn foreground_commands_inherit_terminal_output_and_return_their_status() {
+        let command = if cfg!(windows) {
+            "Write-Output FOREGROUND_TEST_OK"
+        } else {
+            "printf 'FOREGROUND_TEST_OK\\n'"
+        };
+        let outcome = run_foreground_shell_command(command);
+        assert!(outcome.success);
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(outcome.had_output);
+    }
+
+    #[test]
     fn detects_failed_commands_that_return_no_output() {
         let outcome = run_shell_command("exit 7");
         assert!(!outcome.success);
@@ -1461,7 +1548,7 @@ mod tests {
 
     #[test]
     fn multi_step_execution_stops_after_the_first_failure() {
-        let outcome = run_planned_commands("exit 7; exit 0");
+        let outcome = run_planned_commands_with_behavior("exit 7; exit 0", false);
         assert!(!outcome.success);
         assert_eq!(outcome.exit_code, Some(7));
     }
