@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 mod navigation;
+mod project_run;
 mod target_resolution;
 pub use navigation::{
     infer_direct_child_from_request, infer_existing_target_from_request, resolve_navigation_target,
@@ -127,6 +128,8 @@ pub struct ProviderPlan {
     pub runtime: Option<String>,
     pub error: Option<String>,
     pub diagnostics: Option<PlannerDiagnostics>,
+    #[serde(default)]
+    pub foreground_process: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +282,7 @@ pub fn plan_provider_input(request: ProviderPlanRequest) -> ProviderPlan {
             runtime: None,
             error: None,
             diagnostics: None,
+            foreground_process: false,
         };
     }
 
@@ -311,6 +315,7 @@ pub fn plan_literal_command(
         runtime: None,
         error: None,
         diagnostics: None,
+        foreground_process: false,
     }
 }
 
@@ -377,6 +382,7 @@ fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
             runtime: None,
             error: Some("No model profile is available.".to_string()),
             diagnostics: None,
+            foreground_process: false,
         };
     };
     plan_ai_run_with(input, request, profile, run_gguf_model)
@@ -406,6 +412,28 @@ fn plan_ai_run_with(
             None,
             None,
         );
+    }
+    if let Some(plan) = current_project_run_plan(input, &request.context_json) {
+        let is_host_compiled_command = plan.kind == SemanticPlanKind::ShellCommand;
+        let mut provider_plan = semantic_to_provider_plan(
+            input,
+            plan,
+            request.surface,
+            &request.context_json,
+            None,
+            None,
+            None,
+        );
+        if is_host_compiled_command {
+            provider_plan.foreground_process = true;
+            provider_plan.reason = if provider_plan.needs_approval {
+                "Compiled from detected project metadata. Running local project code requires approval."
+            } else {
+                "Compiled from detected project metadata and validated by the host."
+            }
+            .to_string();
+        }
+        return provider_plan;
     }
     let base_system_prompt = build_semantic_plan_system_prompt();
     let mut system_prompt = base_system_prompt.clone();
@@ -599,6 +627,7 @@ fn plan_ai_run_with(
         runtime: request.diagnostics.then_some(result.command_line),
         error: None,
         diagnostics,
+        foreground_process: false,
     }
 }
 
@@ -1056,79 +1085,15 @@ fn recent_turn_requested_clarification(context: &serde_json::Value, input: &str)
 }
 
 fn ground_current_project_run(plan: &mut SemanticPlan, input: &str, context: &serde_json::Value) {
+    let Some(grounded) = current_project_run_plan(input, context) else {
+        return;
+    };
+    *plan = grounded;
+}
+
+fn current_project_run_plan(input: &str, context: &serde_json::Value) -> Option<SemanticPlan> {
     let effective_request = contextualized_request(input, context);
-    if !requests_current_project_run(&effective_request) {
-        return;
-    }
-    let is_node_project = context
-        .get("project_type")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|project_type| project_type.eq_ignore_ascii_case("node"));
-    if !is_node_project {
-        return;
-    }
-    let Some(tasks) = context
-        .get("available_tasks")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return;
-    };
-    let available = tasks
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .collect::<Vec<_>>();
-    let Some(task) = select_project_run_task(&effective_request, &available) else {
-        return;
-    };
-    let manager = context
-        .get("package_manager")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("npm");
-    let command = match manager {
-        "yarn" => format!("yarn {task}"),
-        "pnpm" => format!("pnpm run {task}"),
-        "bun" => format!("bun run {task}"),
-        _ => format!("npm run {task}"),
-    };
-    plan.kind = SemanticPlanKind::ShellCommand;
-    plan.payload = Some(command);
-    plan.target = None;
-    plan.scope = None;
-    plan.message = None;
-    plan.operation = None;
-    plan.destination = None;
-}
-
-fn requests_current_project_run(input: &str) -> bool {
-    let words = request_words(input);
-    words
-        .iter()
-        .any(|word| matches!(word.as_str(), "run" | "start" | "launch" | "serve"))
-        && words.iter().any(|word| {
-            matches!(
-                word.as_str(),
-                "website" | "site" | "app" | "application" | "project"
-            )
-        })
-}
-
-fn select_project_run_task<'a>(input: &str, available: &[&'a str]) -> Option<&'a str> {
-    let words = request_words(input);
-    available
-        .iter()
-        .copied()
-        .find(|task| words.iter().any(|word| word.eq_ignore_ascii_case(task)))
-        .or_else(|| {
-            ["dev", "start", "serve", "preview"]
-                .iter()
-                .find_map(|preferred| {
-                    available
-                        .iter()
-                        .copied()
-                        .find(|task| task.eq_ignore_ascii_case(preferred))
-                })
-        })
-        .or_else(|| (available.len() == 1).then_some(available[0]))
+    project_run::compile_project_run(&effective_request, context)
 }
 
 fn ground_named_filesystem_search(
@@ -2605,6 +2570,7 @@ fn safe_fallback_plan(
         runtime,
         error: None,
         diagnostics,
+        foreground_process: false,
     }
 }
 
@@ -3059,6 +3025,7 @@ fn semantic_to_provider_plan(
                     runtime,
                     error: None,
                     diagnostics,
+                    foreground_process: false,
                 },
                 NavigationResolution::Ambiguous(paths) => {
                     let choices = paths
@@ -3164,6 +3131,7 @@ fn response_plan(
         runtime,
         error: None,
         diagnostics,
+        foreground_process: false,
     }
 }
 
@@ -3183,6 +3151,7 @@ fn planner_runtime_error(input: &str, surface: String, error: String) -> Provide
         runtime: None,
         error: Some(error),
         diagnostics: None,
+        foreground_process: false,
     }
 }
 
@@ -3237,6 +3206,7 @@ pub fn evaluate_generated_command(
         runtime,
         error: None,
         diagnostics: None,
+        foreground_process: false,
     }
 }
 
@@ -4499,10 +4469,77 @@ mod planner_tests {
         );
         assert_eq!(plan.command.as_deref(), Some("npm run dev"));
         assert!(plan.needs_approval);
+        assert!(plan.foreground_process);
     }
 
     #[test]
-    fn current_project_run_survives_two_malformed_model_responses() {
+    fn direct_current_project_run_uses_verified_manifest_context_without_the_model() {
+        let context = serde_json::json!({
+            "cwd": ".",
+            "project_type": "node",
+            "package_manager": "npm",
+            "dependencies_installed": true,
+            "available_tasks": ["build", "dev", "test"]
+        });
+        let plan = plan_ai_run_with(
+            "run this website please",
+            request(context),
+            profile(),
+            |_| panic!("verified project context must bypass the model"),
+        );
+
+        assert_eq!(
+            plan.action,
+            ProviderPlanAction::ApprovalRequired,
+            "{plan:?}"
+        );
+        assert_eq!(plan.command.as_deref(), Some("npm run dev"));
+        assert!(plan.needs_approval);
+    }
+
+    #[test]
+    fn direct_project_run_installs_missing_dependencies_before_the_declared_task() {
+        let context = serde_json::json!({
+            "cwd": ".",
+            "project_type": "node",
+            "package_manager": "npm",
+            "dependencies_installed": false,
+            "available_tasks": ["build", "dev", "test"]
+        });
+        let plan = plan_from_input(
+            "run this website please",
+            &[r#"{"kind":"clarification","message":"Which target?"}"#],
+            context,
+        );
+
+        assert_eq!(
+            plan.action,
+            ProviderPlanAction::ApprovalRequired,
+            "{plan:?}"
+        );
+        assert_eq!(plan.command.as_deref(), Some("npm install; npm run dev"));
+        assert!(plan.needs_approval);
+        assert!(plan.foreground_process);
+    }
+
+    #[test]
+    fn project_run_rejects_manifest_task_names_with_shell_syntax() {
+        let context = serde_json::json!({
+            "cwd": ".",
+            "project_type": "node",
+            "package_manager": "npm",
+            "dependencies_installed": true,
+            "available_tasks": ["dev; remove-everything"]
+        });
+
+        let plan = current_project_run_plan("run this website", &context)
+            .expect("unsafe metadata should produce a safe clarification");
+        assert_eq!(plan.kind, SemanticPlanKind::Clarification);
+        assert!(plan.payload.is_none());
+    }
+
+    #[test]
+    fn current_project_run_follow_up_bypasses_the_model() {
         let context = serde_json::json!({
             "cwd": ".",
             "project_type": "node",
@@ -4513,13 +4550,11 @@ mod planner_tests {
                 "outcome": "Which existing directory contains the website?"
             }]
         });
-        let plan = plan_from_input(
+        let plan = plan_ai_run_with(
             "use the current folder",
-            &[
-                "not valid JSON",
-                r#"{"kind":"filesystem_action","operation":"move","target":"current"}"#,
-            ],
-            context,
+            request(context),
+            profile(),
+            |_| panic!("verified project context must bypass the model"),
         );
 
         assert_eq!(
@@ -4528,12 +4563,7 @@ mod planner_tests {
             "{plan:?}"
         );
         assert_eq!(plan.command.as_deref(), Some("npm run dev"));
-        assert_eq!(
-            plan.diagnostics
-                .as_ref()
-                .map(|value| value.parser_strategy.as_str()),
-            Some("host_compiled_after_repair")
-        );
+        assert!(plan.diagnostics.is_none());
     }
 
     #[test]
