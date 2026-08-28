@@ -133,7 +133,10 @@ impl CloudProviders {
     pub fn select(&mut self, name: &str, model: Option<&str>) -> Result<ModelProfile, String> {
         let preset = PRESETS
             .iter()
-            .find(|preset| preset.name.eq_ignore_ascii_case(name))
+            .find(|preset| {
+                preset.name.eq_ignore_ascii_case(name)
+                    || (preset.name == "groq" && name.eq_ignore_ascii_case("groqcloud"))
+            })
             .ok_or_else(|| format!("Unknown provider '{name}'. Run /provider list."))?;
         self.active = Some(CloudProviderConfig {
             name: preset.name.to_string(),
