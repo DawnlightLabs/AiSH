@@ -1,3 +1,4 @@
+mod cloud_providers;
 mod known_folders;
 mod logging;
 mod model_registry;

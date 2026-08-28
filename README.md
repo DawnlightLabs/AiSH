@@ -117,6 +117,8 @@ On Windows this removes the Start menu shortcut, Installed apps entry, App Paths
 
 - AI Run mode for shell-aware command planning.
 - Local-first model path support where configured.
+- Native BYOK AI Run providers: OpenAI, Anthropic, Gemini, OpenRouter, Groq, Ollama, Mistral, Together, DeepSeek, xAI, Perplexity, Fireworks, and custom OpenAI-compatible APIs.
+- Provider selection is persisted locally, while API keys remain in standard environment variables and are never saved by AiSH.
 - Read-only commands can run quickly after validation.
 - Destructive and system-impacting commands require approval.
 - Command previews before execution.
@@ -133,6 +135,12 @@ AiSH is intentionally approval-gated.
 Commands that delete files, overwrite data, install packages, edit shell profiles, alter PATH, run installers, use elevated privileges, or modify system state should require explicit user approval.
 
 No generated candidate should bypass the safety layer.
+
+## Bring your own key (BYOK)
+
+From the provider shell, run `/provider list`, then select a provider such as `/provider use openai` or `/provider use ollama llama3.2`. The selected provider and model are saved locally; keys are read only from the environment when a request is made.
+
+For example, set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or `GROQ_API_KEY` before starting AiSH. For a compatible gateway or self-hosted server, use `/provider custom <https://endpoint/v1> <model> <API_KEY_ENV>`. Use `/provider off` to return to the selected local GGUF model.
 
 ## Development
 

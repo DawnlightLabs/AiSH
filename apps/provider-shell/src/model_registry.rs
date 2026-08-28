@@ -220,6 +220,9 @@ fn profile_for(path: &Path, runtime_path: &str) -> ModelProfile {
         retry_count: 1,
         stop_sequences,
         timeout_seconds: 60,
+        backend: aish_ai::ModelBackend::LocalGguf,
+        endpoint: None,
+        api_key_env: None,
     }
 }
 
@@ -439,6 +442,9 @@ mod tests {
             retry_count: 1,
             stop_sequences: Vec::new(),
             timeout_seconds: 60,
+            backend: aish_ai::ModelBackend::LocalGguf,
+            endpoint: None,
+            api_key_env: None,
         }
     }
 }

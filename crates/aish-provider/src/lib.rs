@@ -1,8 +1,8 @@
 use aish_ai::{
     build_repair_prompt, build_semantic_plan_prompt, build_semantic_plan_system_prompt,
-    failed_command_recovery_grammar, parse_semantic_plan, run_gguf_model,
-    semantic_plan_grammar_for, validate_shell_command_dialect, ModelProfile, ModelRunRequest,
-    ModelRunResult, SemanticPlan, SemanticPlanKind,
+    failed_command_recovery_grammar, parse_semantic_plan, run_model, semantic_plan_grammar_for,
+    validate_shell_command_dialect, ModelProfile, ModelRunRequest, ModelRunResult, SemanticPlan,
+    SemanticPlanKind,
 };
 use aish_core::{AiSubmode, AppMode, CachePolicy, ContextLevel, RiskLevel};
 use aish_safety::classify_risk;
@@ -385,7 +385,7 @@ fn plan_ai_run(input: &str, request: ProviderPlanRequest) -> ProviderPlan {
             foreground_process: false,
         };
     };
-    plan_ai_run_with(input, request, profile, run_gguf_model)
+    plan_ai_run_with(input, request, profile, run_model)
 }
 
 fn plan_ai_run_with(
@@ -3357,6 +3357,9 @@ pub fn default_model_profile() -> ModelProfile {
         retry_count: 1,
         stop_sequences: Vec::new(),
         timeout_seconds: 60,
+        backend: aish_ai::ModelBackend::LocalGguf,
+        endpoint: None,
+        api_key_env: None,
     }
 }
 

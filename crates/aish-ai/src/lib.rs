@@ -61,6 +61,23 @@ pub struct ModelProfile {
     pub stop_sequences: Vec<String>,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    #[serde(default)]
+    pub backend: ModelBackend,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelBackend {
+    #[default]
+    LocalGguf,
+    OpenAiCompatible,
+    Anthropic,
+    Gemini,
+    Ollama,
 }
 
 fn default_structured_strategy() -> String {
@@ -92,6 +109,9 @@ impl Default for ModelProfile {
             retry_count: default_retry_count(),
             stop_sequences: Vec::new(),
             timeout_seconds: default_timeout_seconds(),
+            backend: ModelBackend::LocalGguf,
+            endpoint: None,
+            api_key_env: None,
         }
     }
 }
@@ -127,6 +147,163 @@ pub struct ModelRunResult {
 
 pub trait AiRuntime {
     fn create_card(&self, request: AiRequest) -> AiResponse;
+}
+
+/// Run the selected local or BYOK-backed model. API keys are intentionally read
+/// from the process environment at request time and are never part of a profile.
+pub fn run_model(request: ModelRunRequest) -> Result<ModelRunResult, String> {
+    match request.profile.backend {
+        ModelBackend::LocalGguf => run_gguf_model(request),
+        ModelBackend::OpenAiCompatible
+        | ModelBackend::Anthropic
+        | ModelBackend::Gemini
+        | ModelBackend::Ollama => run_cloud_model(request),
+    }
+}
+
+fn run_cloud_model(request: ModelRunRequest) -> Result<ModelRunResult, String> {
+    let profile = &request.profile;
+    let endpoint = profile
+        .endpoint
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{} has no configured endpoint.", profile.label))?;
+    let api_key = match &profile.api_key_env {
+        Some(variable) => Some(std::env::var(variable).map_err(|_| {
+            format!(
+                "{} is not set. Set it in your environment, then restart AiSH.",
+                variable
+            )
+        })?),
+        None => None,
+    };
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(profile.timeout_seconds.max(1)))
+        .build();
+    let (_url, body, mut request_builder) = match profile.backend {
+        ModelBackend::OpenAiCompatible => {
+            let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+            let body = serde_json::json!({
+                "model": profile.id,
+                "messages": [
+                    {"role": "system", "content": request.system_prompt},
+                    {"role": "user", "content": request.prompt}
+                ],
+                "temperature": profile.temperature,
+                "max_tokens": profile.max_tokens
+            });
+            let builder = agent.post(&url).set("Content-Type", "application/json");
+            (url, body, builder)
+        }
+        ModelBackend::Anthropic => {
+            let url = format!("{}/messages", endpoint.trim_end_matches('/'));
+            let body = serde_json::json!({
+                "model": profile.id,
+                "max_tokens": profile.max_tokens,
+                "system": request.system_prompt,
+                "messages": [{"role": "user", "content": request.prompt}]
+            });
+            let builder = agent
+                .post(&url)
+                .set("Content-Type", "application/json")
+                .set("anthropic-version", "2023-06-01");
+            (url, body, builder)
+        }
+        ModelBackend::Gemini => {
+            let key = api_key
+                .as_deref()
+                .expect("Gemini profile requires an API key");
+            let separator = if endpoint.contains('?') { "&" } else { "?" };
+            let url = format!(
+                "{}/models/{}:generateContent{}key={}",
+                endpoint.trim_end_matches('/'),
+                profile.id,
+                separator,
+                key
+            );
+            let body = serde_json::json!({
+                "system_instruction": {"parts": [{"text": request.system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": request.prompt}]}],
+                "generationConfig": {"temperature": profile.temperature, "maxOutputTokens": profile.max_tokens}
+            });
+            let builder = agent.post(&url).set("Content-Type", "application/json");
+            (url, body, builder)
+        }
+        ModelBackend::Ollama => {
+            let url = format!("{}/api/chat", endpoint.trim_end_matches('/'));
+            let body = serde_json::json!({
+                "model": profile.id,
+                "stream": false,
+                "options": {"temperature": profile.temperature, "num_predict": profile.max_tokens},
+                "messages": [
+                    {"role": "system", "content": request.system_prompt},
+                    {"role": "user", "content": request.prompt}
+                ]
+            });
+            let builder = agent.post(&url).set("Content-Type", "application/json");
+            (url, body, builder)
+        }
+        ModelBackend::LocalGguf => unreachable!("local runtime is handled above"),
+    };
+    if let Some(key) = api_key
+        .as_deref()
+        .filter(|_| profile.backend != ModelBackend::Gemini)
+    {
+        request_builder = if profile.backend == ModelBackend::Anthropic {
+            request_builder.set("x-api-key", key)
+        } else {
+            request_builder.set("Authorization", &format!("Bearer {key}"))
+        };
+    }
+    let response = request_builder
+        .send_json(body)
+        .map_err(|error| match error {
+            ureq::Error::Status(code, _) => format!("{} returned HTTP {code}.", profile.label),
+            ureq::Error::Transport(_) => format!(
+                "{} request could not reach the configured endpoint.",
+                profile.label
+            ),
+        })?;
+    let mut reader = response.into_reader();
+    let mut raw = String::new();
+    reader
+        .read_to_string(&mut raw)
+        .map_err(|error| format!("Could not read {} response: {error}", profile.label))?;
+    let json: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|_| format!("{} returned invalid JSON.", profile.label))?;
+    let output = extract_cloud_text(profile.backend.clone(), &json)
+        .ok_or_else(|| format!("{} returned no text response.", profile.label))?;
+    Ok(ModelRunResult {
+        ok: true,
+        command_line: format!("{} cloud request", profile.label),
+        output,
+        error: String::new(),
+        raw_stdout: raw,
+        raw_stderr: String::new(),
+        exit_code: Some(0),
+        structured_output: "unconstrained".to_string(),
+    })
+}
+
+fn extract_cloud_text(backend: ModelBackend, value: &serde_json::Value) -> Option<String> {
+    match backend {
+        ModelBackend::OpenAiCompatible => value
+            .pointer("/choices/0/message/content")
+            .and_then(text_value),
+        ModelBackend::Anthropic => value.pointer("/content/0/text").and_then(text_value),
+        ModelBackend::Gemini => value
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(text_value),
+        ModelBackend::Ollama => value.pointer("/message/content").and_then(text_value),
+        ModelBackend::LocalGguf => None,
+    }
+}
+
+fn text_value(value: &serde_json::Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
 }
 
 pub struct NullAiRuntime;

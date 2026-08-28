@@ -5,7 +5,8 @@ mod setup;
 mod theme;
 mod updater;
 
-use aish_ai::ModelProfile;
+use aish_ai::{ModelBackend, ModelProfile};
+use crate::cloud_providers::CloudProviders;
 use known_folders::KnownFolders;
 use model_registry::ModelRegistry;
 use aish_completion::demo_suggestions;
@@ -45,6 +46,7 @@ struct ProviderState {
     diagnostics: bool,
     theme: Theme,
     known_folders: KnownFolders,
+    cloud_providers: CloudProviders,
 }
 
 #[derive(Debug)]
@@ -64,7 +66,8 @@ fn main() {
 
     let initial = default_profile();
     let registry = ModelRegistry::discover(&initial.llama_cli_path);
-    let profile = registry.active().cloned().unwrap_or(initial);
+    let cloud_providers = CloudProviders::load();
+    let profile = cloud_providers.profile().or_else(|| registry.active().cloned()).unwrap_or(initial);
     let mut state = ProviderState {
         profile,
         registry,
@@ -73,11 +76,14 @@ fn main() {
         diagnostics: env::var("AISH_DIAGNOSTICS").ok().as_deref() == Some("1"),
         theme: Theme::load(),
         known_folders: KnownFolders::discover(),
+        cloud_providers,
     };
     if handle_headless_route() {
         return;
     }
-    setup::ensure_model(&state.profile);
+    if state.profile.backend == ModelBackend::LocalGguf {
+        setup::ensure_model(&state.profile);
+    }
     if handle_headless_plan(&state) {
         return;
     }
@@ -299,6 +305,7 @@ fn handle_slash(input: &str, state: &mut ProviderState) -> bool {
             },
             _ => println!("usage: /model list | /model use <id> | /model status"),
         },
+        "/provider" | "/providers" => handle_provider_command(parts, state),
         "/diagnostics" => match parts.next() {
             Some("on") => {
                 state.diagnostics = true;
@@ -581,16 +588,57 @@ fn print_model_status(state: &ProviderState) {
     println!("active model: {}", state.profile.label);
     println!("model id: {}", state.profile.id);
     println!("family: {}", state.profile.family);
-    println!("model path: {}", state.profile.model_path);
-    println!("runtime: {}", state.profile.llama_cli_path);
-    println!(
-        "acceleration: {}",
-        crate::runtime_bootstrap::acceleration_status(Path::new(&state.profile.llama_cli_path))
-    );
+    println!("backend: {:?}", state.profile.backend);
+    if state.profile.backend == ModelBackend::LocalGguf {
+        println!("model path: {}", state.profile.model_path);
+        println!("runtime: {}", state.profile.llama_cli_path);
+        println!(
+            "acceleration: {}",
+            crate::runtime_bootstrap::acceleration_status(Path::new(&state.profile.llama_cli_path))
+        );
+    } else {
+        println!("endpoint: {}", state.profile.endpoint.as_deref().unwrap_or("not configured"));
+        println!("BYOK key: {}", state.profile.api_key_env.as_deref().unwrap_or("not required"));
+    }
     println!("structured output: {}", state.profile.structured_output_strategy);
     println!("context tokens: {}", state.profile.context_tokens);
     println!("maximum output tokens: {}", state.profile.max_tokens);
     println!("discovered models: {}", state.registry.models().len());
+}
+
+fn handle_provider_command<'a>(mut parts: impl Iterator<Item = &'a str>, state: &mut ProviderState) {
+    match parts.next() {
+        None | Some("status") => match &state.cloud_providers.active {
+            Some(config) => println!("provider: {}\nmodel: {}\nendpoint: {}\nBYOK key: {}", config.name, config.model, config.endpoint, config.api_key_env.as_deref().unwrap_or("not required")),
+            None => println!("provider: local GGUF"),
+        },
+        Some("list") => {
+            for preset in CloudProviders::presets() {
+                let key = preset.api_key_env.unwrap_or("no key (local)");
+                println!("{}  default model: {}  BYOK: {}", preset.name, preset.model, key);
+            }
+            println!("custom  OpenAI-compatible endpoint; use /provider custom <https://endpoint/v1> <model> <API_KEY_ENV>");
+        }
+        Some("use") | Some("enable") => match parts.next() {
+            Some(name) => match state.cloud_providers.select(name, parts.next()) {
+                Ok(profile) => { state.profile = profile; state.pending = None; println!("active provider: {}", state.profile.label); }
+                Err(error) => println!("{error}"),
+            },
+            None => println!("usage: /provider use <name> [model]"),
+        },
+        Some("custom") => match (parts.next(), parts.next(), parts.next()) {
+            (Some(endpoint), Some(model), Some(key_env)) => match state.cloud_providers.configure_custom(endpoint, model, key_env) {
+                Ok(profile) => { state.profile = profile; state.pending = None; println!("active provider: {}", state.profile.label); }
+                Err(error) => println!("{error}"),
+            },
+            _ => println!("usage: /provider custom <https://endpoint/v1> <model> <API_KEY_ENV>"),
+        },
+        Some("off") | Some("local") => match state.cloud_providers.disable() {
+            Ok(()) => { state.profile = state.registry.active().cloned().unwrap_or_else(default_profile); state.pending = None; println!("active provider: local GGUF"); }
+            Err(error) => println!("{error}"),
+        },
+        _ => println!("usage: /provider list | /provider use <name> [model] | /provider custom <endpoint> <model> <API_KEY_ENV> | /provider off"),
+    }
 }
 
 fn approve_pending(state: &mut ProviderState) {
@@ -671,6 +719,10 @@ fn print_help(theme: &Theme) {
     println!("  /model list            list enabled models");
     println!("  /model use <id>        persist and activate a discovered model");
     println!("  /model status          show model and runtime configuration");
+    println!("  /provider list         list native BYOK and local providers");
+    println!("  /provider use <name> [model]  persist a provider selection (keys stay in environment variables)");
+    println!("  /provider custom <endpoint> <model> <API_KEY_ENV>  configure an OpenAI-compatible provider");
+    println!("  /provider off          return to the selected local GGUF model");
     println!("  /theme                 show active color theme");
     println!("  /theme list            list cross-platform color themes");
     println!("  /theme use <name>      persist and activate a theme");
