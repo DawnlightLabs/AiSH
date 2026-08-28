@@ -1,3 +1,4 @@
+use crate::cloud_providers::CloudProviders;
 use crate::logging;
 use aish_ai::ModelProfile;
 use std::env;
@@ -161,7 +162,23 @@ pub fn run_interactive_install(exit_after: bool) {
         default_install_dir().display().to_string(),
     );
     let install_dir = PathBuf::from(install_dir);
-    let download_model = prompt_yes_no("Download/check the Qwen2.5 Coder model now", true);
+    let custom_model = prompt_custom_gguf();
+    let recommended_model = default_model_path();
+    let download_model = if custom_model.is_some() {
+        false
+    } else if is_valid_gguf(&recommended_model) {
+        println!(
+            "Recommended local model already found: {}",
+            recommended_model.display()
+        );
+        false
+    } else {
+        println!(
+            "Recommended local model is not installed: {}",
+            recommended_model.display()
+        );
+        prompt_yes_no("Download the recommended Qwen2.5 Coder model now", true)
+    };
     let add_to_path = prompt_yes_no("Add aish.exe to PATH", true);
     let set_model_env = prompt_yes_no("Set up local model path environment variable", true);
     let add_windows_terminal = prompt_yes_no("Add AiSH Provider Shell to Windows Terminal", true);
@@ -216,10 +233,10 @@ pub fn run_interactive_install(exit_after: bool) {
         }
 
         if set_model_env {
-            if let Err(error) = persist_env_var(
-                "AISH_MODEL_PATH",
-                &default_model_path().display().to_string(),
-            ) {
+            let model_path = custom_model.clone().unwrap_or_else(default_model_path);
+            if let Err(error) =
+                persist_env_var("AISH_MODEL_PATH", &model_path.display().to_string())
+            {
                 eprintln!("setup warning: could not save AISH_MODEL_PATH: {error}");
             }
         }
@@ -247,9 +264,38 @@ pub fn run_interactive_install(exit_after: bool) {
         }
     }
 
+    let mut cloud_providers = CloudProviders::load();
+    match cloud_providers.configure_interactively() {
+        Ok(Some(_)) => println!(
+            "Cloud BYOK enabled with fallback order: {}",
+            cloud_providers.enabled_names().join(" → ")
+        ),
+        Ok(None) => {}
+        Err(error) => eprintln!("setup warning: cloud BYOK was not configured: {error}"),
+    }
+
     println!("setup complete");
     if exit_after {
         std::process::exit(0);
+    }
+}
+
+fn prompt_custom_gguf() -> Option<PathBuf> {
+    if !prompt_yes_no("Use an existing custom GGUF model", false) {
+        return None;
+    }
+    loop {
+        let path = prompt_with_default("Custom GGUF file (or type skip)", "skip".to_string());
+        if path.eq_ignore_ascii_case("skip") {
+            return None;
+        }
+        let candidate = PathBuf::from(path.trim_matches('"'));
+        if is_valid_gguf(&candidate) {
+            println!("Custom GGUF accepted: {}", candidate.display());
+            println!("AiSH will use it in place; it will not be copied or modified.");
+            return Some(candidate);
+        }
+        println!("That file is not a readable GGUF model. Enter another path or type skip.");
     }
 }
 

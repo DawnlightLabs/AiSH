@@ -138,9 +138,11 @@ No generated candidate should bypass the safety layer.
 
 ## Bring your own key (BYOK)
 
-From the provider shell, run `/provider list`, then select a provider such as `/provider use openai` or `/provider use ollama llama3.2`. The selected provider and model are saved locally; keys are read only from the environment when a request is made.
+Run `/setup` for the guided path. It first checks whether the recommended GGUF model is already available and asks before downloading it. You can instead select an existing GGUF file anywhere on disk; AiSH uses it in place without copying or modifying it.
 
-For example, set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or `GROQ_API_KEY` before starting AiSH. For a compatible gateway or self-hosted server, use `/provider custom <https://endpoint/v1> <model> <API_KEY_ENV>`. Use `/provider off` to return to the selected local GGUF model.
+The setup then offers cloud BYOK. Select one or more providers in fallback order, choose each model, and optionally enter each key. Provider choices remain in local settings; entered keys are stored in the operating system credential vault and are never written to AiSH JSON files. AiSH tries the enabled providers left-to-right when a cloud request fails. Run `/provider setup` to change this later.
+
+Environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, and `GROQ_API_KEY` still work and take precedence over a stored vault key. For a compatible gateway or self-hosted server, use `/provider custom <https://endpoint/v1> <model> <API_KEY_ENV>`. Use `/provider off` to return to the selected local GGUF model.
 
 ## Development
 

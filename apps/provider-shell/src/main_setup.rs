@@ -609,8 +609,16 @@ fn print_model_status(state: &ProviderState) {
 fn handle_provider_command<'a>(mut parts: impl Iterator<Item = &'a str>, state: &mut ProviderState) {
     match parts.next() {
         None | Some("status") => match &state.cloud_providers.active {
-            Some(config) => println!("provider: {}\nmodel: {}\nendpoint: {}\nBYOK key: {}", config.name, config.model, config.endpoint, config.api_key_env.as_deref().unwrap_or("not required")),
+            Some(config) => {
+                println!("primary provider: {}\nmodel: {}\nendpoint: {}\nBYOK key: {}", config.name, config.model, config.endpoint, config.api_key_env.as_deref().unwrap_or("not required"));
+                println!("fallback order: {}", state.cloud_providers.enabled_names().join(" → "));
+            }
             None => println!("provider: local GGUF"),
+        },
+        Some("setup") => match state.cloud_providers.configure_interactively() {
+            Ok(Some(profile)) => { state.profile = profile; state.pending = None; println!("Cloud BYOK enabled: {}", state.cloud_providers.enabled_names().join(" → ")); }
+            Ok(None) => { state.profile = state.registry.active().cloned().unwrap_or_else(default_profile); state.pending = None; }
+            Err(error) => println!("BYOK setup failed: {error}"),
         },
         Some("list") => {
             for preset in CloudProviders::presets() {
@@ -637,7 +645,7 @@ fn handle_provider_command<'a>(mut parts: impl Iterator<Item = &'a str>, state: 
             Ok(()) => { state.profile = state.registry.active().cloned().unwrap_or_else(default_profile); state.pending = None; println!("active provider: local GGUF"); }
             Err(error) => println!("{error}"),
         },
-        _ => println!("usage: /provider list | /provider use <name> [model] | /provider custom <endpoint> <model> <API_KEY_ENV> | /provider off"),
+        _ => println!("usage: /provider setup | /provider list | /provider use <name> [model] | /provider custom <endpoint> <model> <API_KEY_ENV> | /provider off"),
     }
 }
 
@@ -720,6 +728,7 @@ fn print_help(theme: &Theme) {
     println!("  /model use <id>        persist and activate a discovered model");
     println!("  /model status          show model and runtime configuration");
     println!("  /provider list         list native BYOK and local providers");
+    println!("  /provider setup        interactively choose BYOK providers, keys, and fallback order");
     println!("  /provider use <name> [model]  persist a provider selection (keys stay in environment variables)");
     println!("  /provider custom <endpoint> <model> <API_KEY_ENV>  configure an OpenAI-compatible provider");
     println!("  /provider off          return to the selected local GGUF model");

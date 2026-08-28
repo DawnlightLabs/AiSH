@@ -3360,6 +3360,8 @@ pub fn default_model_profile() -> ModelProfile {
         backend: aish_ai::ModelBackend::LocalGguf,
         endpoint: None,
         api_key_env: None,
+        api_key_service: None,
+        fallback_profiles: Vec::new(),
     }
 }
 

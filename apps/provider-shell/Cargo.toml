@@ -21,6 +21,7 @@ aish-logging = { path = "../../crates/aish-logging" }
 serde.workspace = true
 serde_json.workspace = true
 ureq = "2"
+keyring = "3"
 
 [build-dependencies]
 winres = "0.1.12"

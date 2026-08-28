@@ -67,6 +67,10 @@ pub struct ModelProfile {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub api_key_service: Option<String>,
+    #[serde(default)]
+    pub fallback_profiles: Vec<ModelProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -112,6 +116,8 @@ impl Default for ModelProfile {
             backend: ModelBackend::LocalGguf,
             endpoint: None,
             api_key_env: None,
+            api_key_service: None,
+            fallback_profiles: Vec::new(),
         }
     }
 }
@@ -152,6 +158,24 @@ pub trait AiRuntime {
 /// Run the selected local or BYOK-backed model. API keys are intentionally read
 /// from the process environment at request time and are never part of a profile.
 pub fn run_model(request: ModelRunRequest) -> Result<ModelRunResult, String> {
+    let mut profiles = vec![request.profile.clone()];
+    profiles.extend(request.profile.fallback_profiles.clone());
+    let mut failures = Vec::new();
+    for profile in profiles {
+        let mut attempt = request.clone();
+        attempt.profile = profile;
+        match run_one_model(attempt) {
+            Ok(result) => return Ok(result),
+            Err(error) => failures.push(error),
+        }
+    }
+    Err(format!(
+        "All configured AI providers failed: {}",
+        failures.join("; ")
+    ))
+}
+
+fn run_one_model(request: ModelRunRequest) -> Result<ModelRunResult, String> {
     match request.profile.backend {
         ModelBackend::LocalGguf => run_gguf_model(request),
         ModelBackend::OpenAiCompatible
@@ -168,15 +192,7 @@ fn run_cloud_model(request: ModelRunRequest) -> Result<ModelRunResult, String> {
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("{} has no configured endpoint.", profile.label))?;
-    let api_key = match &profile.api_key_env {
-        Some(variable) => Some(std::env::var(variable).map_err(|_| {
-            format!(
-                "{} is not set. Set it in your environment, then restart AiSH.",
-                variable
-            )
-        })?),
-        None => None,
-    };
+    let api_key = cloud_api_key(profile)?;
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(profile.timeout_seconds.max(1)))
         .build();
@@ -283,6 +299,30 @@ fn run_cloud_model(request: ModelRunRequest) -> Result<ModelRunResult, String> {
         exit_code: Some(0),
         structured_output: "unconstrained".to_string(),
     })
+}
+
+fn cloud_api_key(profile: &ModelProfile) -> Result<Option<String>, String> {
+    let Some(variable) = &profile.api_key_env else {
+        return Ok(None);
+    };
+    if let Ok(key) = std::env::var(variable) {
+        if !key.trim().is_empty() {
+            return Ok(Some(key));
+        }
+    }
+    if let Some(service) = &profile.api_key_service {
+        if let Ok(entry) = keyring::Entry::new(service, &profile.family) {
+            if let Ok(key) = entry.get_password() {
+                if !key.trim().is_empty() {
+                    return Ok(Some(key));
+                }
+            }
+        }
+    }
+    Err(format!(
+        "{} is not configured. Set {variable} or add the key in AiSH setup.",
+        profile.label
+    ))
 }
 
 fn extract_cloud_text(backend: ModelBackend, value: &serde_json::Value) -> Option<String> {

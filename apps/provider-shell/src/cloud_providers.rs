@@ -2,11 +2,16 @@ use aish_ai::{ModelBackend, ModelProfile};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
+
+const KEYRING_SERVICE: &str = "AiSH BYOK";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudProviders {
     pub active: Option<CloudProviderConfig>,
+    #[serde(default)]
+    pub enabled: Vec<CloudProviderConfig>,
     #[serde(skip)]
     path: PathBuf,
 }
@@ -19,6 +24,12 @@ pub struct CloudProviderConfig {
     pub model: String,
     #[serde(default)]
     pub api_key_env: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SavedProviderSettings {
+    #[serde(default)]
+    enabled: Vec<CloudProviderConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,10 +131,23 @@ const PRESETS: &[ProviderPreset] = &[
 impl CloudProviders {
     pub fn load() -> Self {
         let path = settings_path();
-        let active = fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<CloudProviderConfig>(&text).ok());
-        Self { active, path }
+        let text = fs::read_to_string(&path).ok();
+        let enabled = text
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<SavedProviderSettings>(text).ok())
+            .map(|settings| settings.enabled)
+            .or_else(|| {
+                text.as_deref()
+                    .and_then(|text| serde_json::from_str::<CloudProviderConfig>(text).ok())
+                    .map(|config| vec![config])
+            })
+            .unwrap_or_default();
+        let active = enabled.first().cloned();
+        Self {
+            active,
+            enabled,
+            path,
+        }
     }
 
     pub fn presets() -> &'static [ProviderPreset] {
@@ -148,6 +172,7 @@ impl CloudProviders {
                 .to_string(),
             api_key_env: preset.api_key_env.map(str::to_string),
         });
+        self.enabled = self.active.iter().cloned().collect();
         self.save()?;
         Ok(self.profile().expect("active configuration was set"))
     }
@@ -186,12 +211,14 @@ impl CloudProviders {
             model: model.trim().to_string(),
             api_key_env: Some(api_key_env.trim().to_string()),
         });
+        self.enabled = self.active.iter().cloned().collect();
         self.save()?;
         Ok(self.profile().expect("active configuration was set"))
     }
 
     pub fn disable(&mut self) -> Result<(), String> {
         self.active = None;
+        self.enabled.clear();
         if self.path.exists() {
             fs::remove_file(&self.path)
                 .map_err(|error| format!("Could not clear provider settings: {error}"))?;
@@ -200,39 +227,210 @@ impl CloudProviders {
     }
 
     pub fn profile(&self) -> Option<ModelProfile> {
-        self.active.as_ref().map(|config| ModelProfile {
-            id: config.model.clone(),
-            label: format!("{} ({})", config.name, config.model),
-            family: config.name.clone(),
-            model_path: String::new(),
-            llama_cli_path: String::new(),
-            context_tokens: 16_384,
-            max_tokens: 1024,
-            temperature: 0.0,
-            structured_output_strategy: "json".to_string(),
-            chat_template: None,
-            use_system_prompt: true,
-            retry_count: 1,
-            stop_sequences: Vec::new(),
-            timeout_seconds: 90,
-            backend: config.backend.clone(),
-            endpoint: Some(config.endpoint.clone()),
-            api_key_env: config.api_key_env.clone(),
-        })
+        let mut profiles = self.enabled.iter().map(profile_for).collect::<Vec<_>>();
+        let mut primary = profiles.first().cloned()?;
+        primary.fallback_profiles = profiles.drain(1..).collect();
+        Some(primary)
+    }
+
+    pub fn configure_interactively(&mut self) -> Result<Option<ModelProfile>, String> {
+        if !prompt_yes_no("Enable cloud BYOK providers", false) {
+            self.disable()?;
+            println!("Cloud BYOK disabled. AiSH will use your local GGUF model.");
+            return Ok(None);
+        }
+        println!(
+            "Select one or more providers in fallback order (for example: openrouter,gemini,groq)."
+        );
+        println!("Enabled providers are tried left-to-right whenever a request fails.");
+        for preset in PRESETS {
+            println!("  {} — default model: {}", preset.name, preset.model);
+        }
+        println!("  custom — OpenAI-compatible endpoint");
+        let selected = prompt_line("Providers", "");
+        let mut enabled = Vec::new();
+        for requested in selected
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if requested.eq_ignore_ascii_case("custom") {
+                let endpoint = prompt_line("Custom endpoint", "https://");
+                let model = prompt_line("Custom model", "");
+                let key_env = prompt_line("Custom key environment variable", "CUSTOM_API_KEY");
+                let config = custom_config(&endpoint, &model, &key_env)?;
+                capture_key(&config)?;
+                enabled.push(config);
+                continue;
+            }
+            let preset =
+                find_preset(requested).ok_or_else(|| format!("Unknown provider '{requested}'."))?;
+            let model = prompt_line(&format!("{} model", preset.name), preset.model);
+            let config = CloudProviderConfig {
+                name: preset.name.to_string(),
+                backend: preset.backend.clone(),
+                endpoint: preset.endpoint.to_string(),
+                model,
+                api_key_env: preset.api_key_env.map(str::to_string),
+            };
+            capture_key(&config)?;
+            enabled.push(config);
+        }
+        if enabled.is_empty() {
+            return Err("Choose at least one provider, or answer no to disable BYOK.".to_string());
+        }
+        self.enabled = enabled;
+        self.active = self.enabled.first().cloned();
+        self.save()?;
+        Ok(self.profile())
+    }
+
+    pub fn enabled_names(&self) -> Vec<String> {
+        self.enabled
+            .iter()
+            .map(|config| format!("{} ({})", config.name, config.model))
+            .collect()
     }
 
     fn save(&self) -> Result<(), String> {
-        let Some(active) = &self.active else {
+        if self.enabled.is_empty() {
             return Ok(());
-        };
+        }
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
                 format!("Could not create provider settings directory: {error}")
             })?;
         }
-        let json = serde_json::to_string_pretty(active).map_err(|error| error.to_string())?;
+        let json = serde_json::to_string_pretty(&SavedProviderSettings {
+            enabled: self.enabled.clone(),
+        })
+        .map_err(|error| error.to_string())?;
         fs::write(&self.path, format!("{json}\n"))
             .map_err(|error| format!("Could not save provider settings: {error}"))
+    }
+}
+
+fn profile_for(config: &CloudProviderConfig) -> ModelProfile {
+    ModelProfile {
+        id: config.model.clone(),
+        label: format!("{} ({})", config.name, config.model),
+        family: config.name.clone(),
+        model_path: String::new(),
+        llama_cli_path: String::new(),
+        context_tokens: 16_384,
+        max_tokens: 1024,
+        temperature: 0.0,
+        structured_output_strategy: "json".to_string(),
+        chat_template: None,
+        use_system_prompt: true,
+        retry_count: 1,
+        stop_sequences: Vec::new(),
+        timeout_seconds: 90,
+        backend: config.backend.clone(),
+        endpoint: Some(config.endpoint.clone()),
+        api_key_env: config.api_key_env.clone(),
+        api_key_service: config
+            .api_key_env
+            .as_ref()
+            .map(|_| KEYRING_SERVICE.to_string()),
+        fallback_profiles: Vec::new(),
+    }
+}
+
+fn find_preset(name: &str) -> Option<&'static ProviderPreset> {
+    PRESETS.iter().find(|preset| {
+        preset.name.eq_ignore_ascii_case(name)
+            || (preset.name == "groq" && name.eq_ignore_ascii_case("groqcloud"))
+    })
+}
+
+fn custom_config(
+    endpoint: &str,
+    model: &str,
+    api_key_env: &str,
+) -> Result<CloudProviderConfig, String> {
+    let endpoint = endpoint.trim().trim_end_matches('/');
+    if !(endpoint.starts_with("https://")
+        || endpoint.starts_with("http://127.0.0.1")
+        || endpoint.starts_with("http://localhost"))
+    {
+        return Err(
+            "Custom OpenAI-compatible endpoints must use HTTPS (or a localhost URL).".to_string(),
+        );
+    }
+    if model.trim().is_empty()
+        || api_key_env.trim().is_empty()
+        || !api_key_env
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err(
+            "Custom provider needs a model and an uppercase API-key environment variable name."
+                .to_string(),
+        );
+    }
+    Ok(CloudProviderConfig {
+        name: "custom".to_string(),
+        backend: ModelBackend::OpenAiCompatible,
+        endpoint: endpoint.to_string(),
+        model: model.trim().to_string(),
+        api_key_env: Some(api_key_env.trim().to_string()),
+    })
+}
+
+fn capture_key(config: &CloudProviderConfig) -> Result<(), String> {
+    let Some(variable) = &config.api_key_env else {
+        return Ok(());
+    };
+    println!(
+        "{} uses {variable}. Leave this blank to supply it through the environment later.",
+        config.name
+    );
+    let key = prompt_line(&format!("{} API key", config.name), "");
+    if key.trim().is_empty() {
+        return Ok(());
+    }
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &config.name)
+        .map_err(|error| format!("Could not access OS credential vault: {error}"))?;
+    entry.set_password(key.trim()).map_err(|error| {
+        format!(
+            "Could not save {} key in OS credential vault: {error}",
+            config.name
+        )
+    })
+}
+
+fn prompt_yes_no(label: &str, default_yes: bool) -> bool {
+    let suffix = if default_yes { "Y/n" } else { "y/N" };
+    print!("{label} [{suffix}]: ");
+    let _ = io::stdout().flush();
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return default_yes;
+    }
+    match input.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => true,
+        "n" | "no" => false,
+        _ => default_yes,
+    }
+}
+
+fn prompt_line(label: &str, default: &str) -> String {
+    if default.is_empty() {
+        print!("{label}: ");
+    } else {
+        print!("{label} [{default}]: ");
+    }
+    let _ = io::stdout().flush();
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return default.to_string();
+    }
+    let value = input.trim();
+    if value.is_empty() {
+        default.to_string()
+    } else {
+        value.to_string()
     }
 }
 
