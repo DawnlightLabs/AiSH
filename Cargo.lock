@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "aish-provider-shell"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "aish-ai",
  "aish-completion",
